@@ -10,34 +10,47 @@
 #include <memory>
 #include <string>
 
-/// Incompressible Navier–Stokes solver on a staggered (MAC) AMR grid.
+/// Incompressible Navier–Stokes solver on a staggered (MAC) AMR grid,
+/// using the Perot 1997 exact-factorisation fractional-step method
+/// (= Taira–Colonius 2007 minus the immersed-boundary block).
 ///
 /// Layout
 /// ------
 ///   u, v, w   face-centred (one component each)
-///   p, phi    cell-centred (one component)
+///   p         cell-centred (one component)
 ///
-/// Algorithm (per time step, non-subcycled across AMR levels)
-/// ----------------------------------------------------------
-///   1.  A^n  = -(u^n · ∇) u^n               (explicit, centred, face-by-face)
-///   2.  u*   = (I − εL)^{-1} [(I + εL) u^n + dt A^n − dt ∇p^n],   ε = ν dt / 2
-///       with (I − εL)^{-1} replaced by the truncated Neumann series
-///       Σ_{k=0}^{N} (εL)^k.
-///   3.  ∇²φ  = (1/dt) ∇·u*                  (composite multi-level solve via AMReX MLMG)
-///   4.  u^{n+1} = u* − dt ∇φ                (level-local projection)
-///   5.  p^{n+1} = p^n + φ
-///   6.  Average u^{n+1}, p^{n+1} fine→coarse (sync of overlapping coarse cells).
+/// Algorithm (per time step, single-level proper; multi-level
+/// approximated by per-level Perot solves + average-down sync)
+/// ------------------------------------------------------------
+///   ε = ν dt / 2,  B^N = Σ_{k=0}^N (εL)^k   (truncated Neumann series for A^{−1})
 ///
-/// Coarse–fine treatment
-/// ---------------------
-///   * Per-level operator applications (advection, Laplacian, gradient) use
-///     ghost cells filled by AMReX FillPatch infrastructure: intra-level halo
-///     via `FillBoundary`, C/F ghosts via interpolation from the coarse level.
-///   * The pressure-Poisson solve is delegated to MLMG, which handles flux
-///     matching at the C/F interface inside its operator apply.
-///   * Velocities are averaged-down (fine→coarse on overlapping faces) before
-///     forming the Poisson RHS and after projection, so the composite
-///     divergence operator and the projected velocity field are level-consistent.
+///   1.  A^n  = -(u^n · ∇) u^n                          (explicit, centred)
+///   2.  r1   = (I + εL) u^n + dt A^n                   (NO pressure gradient — Perot)
+///   3.  u*   = B^N r1                                   (predictor)
+///   4.  Solve  (D B^N G) p^{n+1} = (1/dt) D u*          (modified Poisson, matrix-free CG)
+///   5.  u^{n+1} = u* − dt B^N G p^{n+1}                  (Perot projection)
+///   6.  Average u^{n+1} and p^{n+1} fine→coarse on overlapping faces / cells.
+///
+/// Why this differs from a textbook Chorin / incremental projection
+/// ----------------------------------------------------------------
+///   * The predictor does NOT contain ∇p^n.  Perot derives the
+///     fractional-step *as* the LU factorisation of the block system,
+///     and the LU has no pressure in the predictor block.
+///   * The Poisson operator is D B^N G (a polynomial in L) rather than
+///     the standard ∇² = D G.  At N=0 they coincide (Chorin); at N=1
+///     the operator matches the CN diffusion to O(dt²).
+///   * The projection multiplies by B^N as well — it is `u* − dt B^N G p`,
+///     not `u* − dt G p`.
+///   * `m_pressure` is solved for directly, not accumulated.  Use the
+///     previous step's value as the CG warm start.
+///
+/// Coarse–fine treatment (current, approximate)
+/// --------------------------------------------
+/// Each level's modified Poisson is solved independently; u* and the
+/// projected u are averaged-down fine→coarse to keep coarse face values
+/// consistent at the C/F interface.  A proper composite D B^N G — with
+/// fine ghosts of every intermediate face term FillPatched from coarse
+/// and average_down between L applications — is feasible but deferred.
 class INSSolver : public amrex::AmrCore {
 public:
   INSSolver();
@@ -68,8 +81,10 @@ private:
   int m_max_step = 10000;
   int m_plot_int = 100;
   int m_regrid_int = 5;
-  int m_cn_order = 2; ///< Neumann-series truncation order
+  int m_cn_order = 1; ///< Neumann-series truncation order N (B^N = I+εL+…+(εL)^N)
   amrex::Real m_refine_vort = 5.0;
+  amrex::Real m_poisson_tol = 1.0e-10; ///< CG relative tolerance
+  int m_poisson_max_iter = 500;
   int m_verbose = 1;
   std::string m_plot_prefix = "plt";
 
@@ -86,7 +101,6 @@ private:
   amrex::Vector<FaceMFArray> m_advect; ///< explicit advection term A^n
   amrex::Vector<FaceMFArray> m_vstar;  ///< intermediate u*
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_pressure;
-  amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_phi;
 
   // ---------------- BC records ----------------
   std::array<amrex::Vector<amrex::BCRec>, AMREX_SPACEDIM> m_bc_vel;
@@ -105,11 +119,11 @@ private:
       int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &adv,
       const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel_in);
 
+  /// CN predictor: u* = B^N [ (I + εL) u^n + dt A^n ].   NO pressure term.
   void ApplyCNDiffusion(
       int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &vstar,
       const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel_in,
-      const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &adv,
-      const amrex::MultiFab &pres);
+      const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &adv);
 
   void ApplyFaceLaplacian(int lev, int dir, const amrex::MultiFab &fin,
                           amrex::MultiFab &Lf);
@@ -117,7 +131,25 @@ private:
   void ComputePressureGradient(int lev, int dir, const amrex::MultiFab &p,
                                amrex::MultiFab &gp);
 
-  void ProjectComposite();
+  /// Apply B^N = Σ_{k=0}^N (εL)^k to a face-centred MultiFab.
+  /// `src` must have ≥2 ghost cells already filled (FillBoundary/FillPatch).
+  void ApplyBNFace(int lev, int dir, const amrex::MultiFab &src,
+                   amrex::MultiFab &dst);
+
+  /// Apply the modified-Poisson operator (D B^N G) to a cell-centred φ.
+  /// `phi` must have its 1-cell ghost layer filled.
+  void ApplyModifiedPoissonOp(int lev, const amrex::MultiFab &phi,
+                              amrex::MultiFab &result);
+
+  /// Matrix-free CG on (D B^N G) p = rhs.
+  /// `p` is in/out — pass the previous-step pressure as the warm start.
+  /// `rhs` is read-only.  Returns the iteration count.
+  int SolveModifiedPoisson(int lev, amrex::MultiFab &p,
+                           const amrex::MultiFab &rhs);
+
+  /// Perot projection across all levels: per-level modified-Poisson solve,
+  /// per-level u^{n+1} = u* − dt B^N G p, then fine→coarse sync.
+  void ProjectPerot();
 
   // FillPatch helpers
   void FillFacePatch(int lev, int dir,
@@ -139,6 +171,11 @@ private:
   void WritePlotFile();
   amrex::Real ComputeMaxVelocity() const;
   amrex::Real ComputeMaxDivergence() const;
+
+  // Compatibility helper: subtract the (volume-weighted) mean of a
+  // cell-centred MultiFab in place — needed for the singular periodic
+  // pressure system.
+  void SubtractMean(int lev, amrex::MultiFab &mf);
 };
 
 #endif

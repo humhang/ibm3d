@@ -71,6 +71,8 @@ void INSSolver::ReadParameters() {
   pp.query("regrid_int", m_regrid_int);
   pp.query("cn_order", m_cn_order);
   pp.query("refine_vort", m_refine_vort);
+  pp.query("poisson_tol", m_poisson_tol);
+  pp.query("poisson_max_iter", m_poisson_max_iter);
   pp.query("verbose", m_verbose);
   pp.query("plot_prefix", m_plot_prefix);
 }
@@ -215,7 +217,6 @@ void INSSolver::ClearLevel(int lev) {
     m_vstar[lev][d].reset();
   }
   m_pressure[lev].reset();
-  m_phi[lev].reset();
 }
 
 // ============================================================
@@ -238,7 +239,6 @@ void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
     m_advect.resize(N);
     m_vstar.resize(N);
     m_pressure.resize(N);
-    m_phi.resize(N);
   }
 
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -251,9 +251,7 @@ void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
   }
 
   m_pressure[lev] = std::make_unique<MultiFab>(ba, dm, 1, nghost_pre);
-  m_phi[lev] = std::make_unique<MultiFab>(ba, dm, 1, nghost_pre);
   m_pressure[lev]->setVal(0.0);
-  m_phi[lev]->setVal(0.0);
 }
 
 // ============================================================
@@ -346,9 +344,6 @@ void INSSolver::Advance() {
       FillFacePatch(lev, d, m_vel, u_n[d], time);
     }
 
-    MultiFab p_n(ba, dm, 1, 1);
-    FillCellPatch(lev, m_pressure, p_n, time, m_bc_pres);
-
     std::array<MultiFab *, AMREX_SPACEDIM> adv_p;
     std::array<const MultiFab *, AMREX_SPACEDIM> u_n_p;
     std::array<MultiFab *, AMREX_SPACEDIM> vs_p;
@@ -363,12 +358,11 @@ void INSSolver::Advance() {
                      {AMREX_D_DECL(&u_n[0], &u_n[1], &u_n[2])},
                      {AMREX_D_DECL((const MultiFab *)m_advect[lev][0].get(),
                                    (const MultiFab *)m_advect[lev][1].get(),
-                                   (const MultiFab *)m_advect[lev][2].get())},
-                     p_n);
+                                   (const MultiFab *)m_advect[lev][2].get())});
   }
 
-  // ---- 2) Composite pressure solve + projection on every level ----
-  ProjectComposite();
+  // ---- 2) Perot modified-Poisson solve + projection on every level ----
+  ProjectPerot();
 
   // ---- 3) Sync coarse with averaged-down fine ----
   AverageDownVelocity(m_vel);

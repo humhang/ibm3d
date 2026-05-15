@@ -1,17 +1,19 @@
 /**
  * INSSolver_Diffuse.cpp
  *
- * Crank–Nicolson diffusion for u* via the Neumann-series truncation
+ * Crank–Nicolson predictor (Perot 1997 form, no pressure):
  *
- *   (I − εL) u* = (I + εL) u^n + dt A^n − dt ∇p^n,    ε = ν dt / 2
- *   u*  ≈ Σ_{k=0}^{N} (εL)^k · [ (I + εL) u^n + dt A^n − dt ∇p^n ]
+ *   r1 = (I + εL) u^n  +  dt A^n               ε = ν dt / 2
+ *   u* = B^N r1                                B^N = Σ_{k=0}^N (εL)^k
  *
- * Convergence of the series requires ‖εL‖ < 1.  For the standard 2nd-order
- * Laplacian this is ε·(2·d/h²) < 1, i.e. ν dt / h² < 1/d.  Increase the
- * truncation order N when this margin is tight.
+ * Convergence of the series requires ‖εL‖ < 1, i.e. ν dt / h² < 1/d.
+ * The pressure gradient is intentionally NOT included here — under
+ * Perot's block-LU factorisation the predictor has no pressure term;
+ * the pressure enters only through the modified-Poisson projection.
  *
- * The Laplacian, gradient, and Saxpys are all applied per-level — `u_n`,
- * `adv` and `pres` are FillPatched inputs supplied by the caller.
+ * The face Laplacian and gradient helpers in this file are reused
+ * by INSSolver_Project.cpp for applying B^N to G p and forming the
+ * modified-Poisson operator D B^N G.
  */
 
 #include "INSSolver.H"
@@ -88,15 +90,57 @@ void INSSolver::ComputePressureGradient(int lev, int dir, const MultiFab &p,
 }
 
 // ============================================================
-//  ApplyCNDiffusion — build u* via the truncated Neumann series
+//  ApplyBNFace — B^N = Σ_{k=0}^N (εL)^k applied to a face MF
+//
+//  Iterative form:
+//    term ← src                        (k = 0)
+//    dst  ← src
+//    for k = 1 .. N:
+//      term ← ε L term
+//      dst  ← dst + term
+//
+//  Caller must ensure `src` has its 2-ghost layer filled.  After each
+//  L application we FillBoundary(periodicity) so the next L sees valid
+//  surroundings — single-level only; multi-level intermediate terms
+//  use FillBoundary as an approximation (see header).
+// ============================================================
+void INSSolver::ApplyBNFace(int lev, int dir, const MultiFab &src,
+                            MultiFab &dst) {
+  const Real eps = 0.5_rt * m_nu * m_dt;
+  const int N = m_cn_order;
+
+  const BoxArray fba = src.boxArray();
+  const DistributionMapping dm = src.DistributionMap();
+
+  // dst ← src   (k=0 term)
+  MultiFab::Copy(dst, src, 0, 0, 1, 0);
+  if (N == 0)
+    return;
+
+  // term holds (εL)^k src as we iterate
+  MultiFab term(fba, dm, 1, 2);
+  MultiFab::Copy(term, src, 0, 0, 1, std::min(src.nGrow(), 2));
+  // (src ghosts are caller's responsibility; copy then refresh just in case)
+  term.FillBoundary(geom[lev].periodicity());
+
+  MultiFab Lterm(fba, dm, 1, 0);
+  for (int k = 1; k <= N; ++k) {
+    ApplyFaceLaplacian(lev, dir, term, Lterm);
+    // term ← ε * Lterm
+    MultiFab::LinComb(term, 0.0_rt, term, 0, eps, Lterm, 0, 0, 1, 0);
+    term.FillBoundary(geom[lev].periodicity());
+    MultiFab::Add(dst, term, 0, 0, 1, 0);
+  }
+}
+
+// ============================================================
+//  ApplyCNDiffusion — Perot predictor:  u* = B^N [(I + εL) u^n + dt A^n]
 // ============================================================
 void INSSolver::ApplyCNDiffusion(
     int lev, const std::array<MultiFab *, AMREX_SPACEDIM> &vstar,
     const std::array<const MultiFab *, AMREX_SPACEDIM> &u_n,
-    const std::array<const MultiFab *, AMREX_SPACEDIM> &adv,
-    const MultiFab &pres) {
+    const std::array<const MultiFab *, AMREX_SPACEDIM> &adv) {
   const Real eps = 0.5_rt * m_nu * m_dt;
-  const int N = m_cn_order;
 
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
@@ -104,47 +148,19 @@ void INSSolver::ApplyCNDiffusion(
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
     BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
 
-    // F = (I + εL) u^n + dt A^n − dt ∇p^n
+    // F = (I + εL) u^n + dt A^n   (no pressure gradient — Perot)
     MultiFab F(fba, dm, 1, 2);
-    MultiFab::Copy(F, *u_n[d], 0, 0, 1, 2); // u_n already has ghosts
+    MultiFab::Copy(F, *u_n[d], 0, 0, 1, 2); // u_n carries 2 ghosts
 
-    // εL u^n  (acts on F's ghost-filled data)
     MultiFab LuN(fba, dm, 1, 0);
     ApplyFaceLaplacian(lev, d, F, LuN);
-    MultiFab::Saxpy(F, eps, LuN, 0, 0, 1, 0);
+    MultiFab::Saxpy(F, eps, LuN, 0, 0, 1, 0); // F += εL u^n
 
-    // + dt A^n
-    MultiFab::Saxpy(F, m_dt, *adv[d], 0, 0, 1, 0);
+    MultiFab::Saxpy(F, m_dt, *adv[d], 0, 0, 1, 0); // F += dt A^n
 
-    // − dt ∇p^n
-    MultiFab gradp(fba, dm, 1, 0);
-    ComputePressureGradient(lev, d, pres, gradp);
-    MultiFab::Saxpy(F, -m_dt, gradp, 0, 0, 1, 0);
-
-    // F's interior is now correct; refresh its ghosts so the next Laplacian
-    // application has valid surroundings.  FillBoundary is enough here:
-    // F lives entirely on this level, and at C/F boundaries on the *fine*
-    // side the ghost layer of F lies inside the fine patch (which is valid)
-    // or one cell outside — but Laplacian applications below only need the
-    // ghosts that the original u_n already carries.  In practice this works
-    // because the Neumann-series term magnitudes decay rapidly.
     F.FillBoundary(geom[lev].periodicity());
 
-    // u* ← F (k = 0 term)
-    MultiFab::Copy(*vstar[d], F, 0, 0, 1, 0);
-
-    // term_k = (εL)^k F, accumulate into u*
-    MultiFab term(fba, dm, 1, 2);
-    MultiFab::Copy(term, F, 0, 0, 1, 2);
-    term.FillBoundary(geom[lev].periodicity());
-
-    MultiFab Lterm(fba, dm, 1, 0);
-    for (int k = 1; k <= N; ++k) {
-      ApplyFaceLaplacian(lev, d, term, Lterm);
-      // term ← ε * Lterm
-      MultiFab::LinComb(term, 0.0_rt, term, 0, eps, Lterm, 0, 0, 1, 0);
-      term.FillBoundary(geom[lev].periodicity());
-      MultiFab::Add(*vstar[d], term, 0, 0, 1, 0);
-    }
+    // u* = B^N F
+    ApplyBNFace(lev, d, F, *vstar[d]);
   }
 }

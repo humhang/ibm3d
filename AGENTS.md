@@ -15,15 +15,23 @@ Key decisions already settled, do not re-litigate:
 
 - **MAC staggered grid**, second-order centred differencing.
 - **Explicit advection + Crank–Nicolson diffusion**, with `(I − εL)^{-1}`
-  approximated by the truncated Neumann series `Σ_{k=0}^{N} (εL)^k`.
-- **Pressure Poisson via AMReX `MLMG`** while there's no IB.  When the IB
-  phase begins, the operator becomes the Taira–Colonius modified Schur
-  complement and is implemented **matrix-free** via a
-  `Tpetra::Operator` subclass — *not* by assembling a `CrsMatrix`.
-- **MLPoisson sign**: `Fapply` computes the *positive* discrete
-  Laplacian, so `mlmg.solve(phi, rhs)` solves `∇²φ = rhs`.  In
-  `ProjectComposite()` the RHS is therefore `+(1/dt) ∇·u*`, not
-  negative.  This was a bug once; do not re-introduce it.
+  approximated by the truncated Neumann series `B^N = Σ_{k=0}^{N} (εL)^k`.
+- **Perot 1997 fractional step**: predictor `r1 = (I + εL) u^n + dt A^n`
+  (NO pressure gradient), `u* = B^N r1`, modified-Poisson
+  `(D B^N G) p^{n+1} = (1/dt) D u*`, projection
+  `u^{n+1} = u* − dt B^N G p^{n+1}`.  `m_pressure` is solved for
+  directly each step — there is no incremental form.
+- **Modified-Poisson solve is matrix-free**, hand-rolled CG.  Operator
+  composed from existing `ComputePressureGradient`, face Laplacian,
+  and cell divergence pieces.  When the IB phase lands, the IB rows
+  attach to this same operator (Tpetra::Operator wrapper) — keeping
+  the modified-Poisson direction was the *purpose* of this design.
+- **`D B^N G` is negative semidefinite** (eigenvalues `−k² · …`).
+  Both the operator (`ApplyModifiedPoissonOp`) and the RHS in
+  `ProjectPerot` are negated so CG sees a PSD system.  This is the
+  same sign story as AMReX `MLPoisson` and bit us in this file's
+  earlier revision; the projection `u^{n+1} = u* − dt B^N G p` still
+  uses the natural `+B^N G p`.
 - **All-periodic BCs only** at this stage.  Wall/inflow/outflow is
   deferred until after the algorithm validates.
 
@@ -45,12 +53,16 @@ Key decisions already settled, do not re-litigate:
   (`FillFacePatch` / `FillCellPatch` helpers).  Intra-level halo +
   C/F interpolation are tied together in those helpers; downstream
   kernels assume their inputs have valid ghosts.
-- `average_down_faces(m_vstar)` *before* forming the Poisson RHS so the
-  composite divergence is level-consistent.
+- `average_down_faces(m_vstar)` *before* the per-level modified-Poisson
+  solves so coarse face values at the C/F interface equal the
+  averaged fine values.
 - `average_down_faces(m_vel)` + `average_down(m_pressure)` at the end of
-  `Advance` to remove the small divergence residual the local
-  projection leaves at C/F interfaces (the standard "approximate
-  projection" pattern).
+  `Advance` to keep coarse representation consistent with averaged
+  fine values after the per-level projection.
+- The `B^N` factor in the projection step is the **same** polynomial
+  used in the predictor and in the modified-Poisson operator — this is
+  Perot's exact-factorisation consistency.  Don't replace any of the
+  three `B^N` applications with the identity "for speed."
 
 ## Setting up a fresh clone
 
