@@ -1,0 +1,10 @@
+- [User: CFD researcher building an AMR IBPM solver](user_cfd_ibpm.md) — Domain expert in incompressible NS and the Taira–Colonius immersed-boundary projection method; building this repo as the eventual host for that algorithm.
+- [Project: ibm3d goal and current status](project_ibm3d_goal.md) — Final target is the Taira–Colonius IBPM on an AMR mesh; the present codebase implements only the NS+AMR substrate, no IB yet.
+- [Project: algorithmic design decisions](project_algorithmic_decisions.md) — MAC staggered grid, explicit advection + CN diffusion via truncated Neumann series, MLMG composite Poisson now / Trilinos matrix-free Tpetra::Operator when IB lands.
+- [Project: matrix-free Trilinos plan for the IB stage](project_ib_matrixfree_plan.md) — Composite Schur-complement applied via Tpetra::Operator + Belos CG, MLMG as the preconditioner; do NOT assemble the modified Poisson matrix.
+- [Project: code layout and current file roles](project_code_layout.md) — Per-file purpose summary; entry points; what's a kernel vs. orchestration.
+- [Reference: external dependency paths](reference_dep_paths.md) — AMReX and Trilinos install prefixes on this machine; CMake config-file locations.
+- [Reference: AMReX MLPoisson sign convention](reference_mlpoisson_sign.md) — MLPoisson's Fapply is the *positive* discrete Laplacian; solving Lφ=rhs means ∇²φ=rhs (verified against the 3D kernel source).
+- [Reference: IBAMR as the production reference](reference_ibamr.md) — Bhalla, Griffith et al. — AMR + Taira–Colonius IBPM, matrix-free Krylov + FAC multilevel preconditioner; the canonical codebase to compare against once IB lands.
+- [Feedback: coding style and language version](feedback_style_cxx20.md) — LLVM clang-format; C++20 features welcome when they improve clarity, not for novelty.
+- [Feedback: matrix-free is the agreed design for the IB Poisson](feedback_matrixfree_decision.md) — Settled in conversation on 2026-05-14: matrix-free `Tpetra::Operator` with MLMG preconditioner, not assembled CRS. Reasoning carried over from AMR + moving-body considerations.

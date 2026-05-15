@@ -52,6 +52,23 @@ Key decisions already settled, do not re-litigate:
   projection leaves at C/F interfaces (the standard "approximate
   projection" pattern).
 
+## Setting up a fresh clone
+
+This repo ships its Claude Code per-project memory inside the working
+tree at `.agent-memory/`.  Claude Code itself reads/writes a path under
+`~/.claude/projects/<encoded-abs-path>/memory/` — the standard bootstrap
+makes that path a symlink into the repo:
+
+```sh
+./scripts/setup-agent-memory.sh
+```
+
+Run it once after cloning.  It's idempotent.  After that, every AI
+session has access to the project's accumulated context (architectural
+decisions, the matrix-free plan for the IB phase, install paths,
+sign-convention gotchas, etc.) — see `.agent-memory/MEMORY.md` for the
+index.
+
 ## Build / run
 
 Standard operations are wired up as Zed tasks in `.zed/tasks.json`.
