@@ -1,0 +1,45 @@
+# ============================================================
+# inputs.tg_amr — Taylor–Green vortex with 2-level AMR
+#
+# Exercises the composite multi-level pressure-Poisson solve
+# and the regrid/FillPatch path.  Refinement is driven by the
+# magnitude of cell-centred vorticity; the threshold is tuned
+# so only the high-|ω| corners of the TG flow get tagged.
+#
+# Peak |ω| for the 3D TG initial condition is ≈ 2 (at the
+# velocity nodes).  refine_vort = 1.0 tags ≈ the upper half
+# of that range.
+#
+# Run with:
+#   ./build-release/src/ins_solver inputs.tg_amr
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  0.0                0.0                0.0
+geometry.prob_hi     =  6.283185307179586  6.283185307179586  6.283185307179586
+geometry.is_periodic =  1  1  1
+
+# ---- AMR ----
+amr.n_cell           =  32  32  32
+amr.max_level        =  1
+amr.ref_ratio        =  2
+amr.blocking_factor  =  4
+amr.max_grid_size    =  16
+amr.v                =  1
+amr.n_error_buf      =  2          # buffer cells around tagged regions
+amr.grid_eff         =  0.7
+
+# ---- Solver parameters ----
+ins.nu               =  1.0e-2
+ins.cfl              =  0.5
+ins.t_stop           =  5.0
+ins.max_step         =  300
+ins.plot_int         =  10
+ins.cn_order         =  2
+
+# ---- Regridding / refinement criteria ----
+ins.regrid_int       =  5          # regrid every 5 steps
+ins.refine_vort      =  1.0        # tag where |ω| > 1.0
+
+ins.verbose          =  1
+ins.plot_prefix      =  plt_amr

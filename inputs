@@ -1,0 +1,31 @@
+# ============================================================
+# inputs — single-level Taylor–Green vortex
+#
+# Reference test for the incompressible NS solver.  Initial
+# condition is the canonical 3D Taylor–Green vortex on
+# [0, 2π]^3 with periodic BCs.  Kinetic energy decays
+# monotonically under viscous dissipation; running long enough
+# the flow becomes near-laminar.
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  0.0                0.0                0.0
+geometry.prob_hi     =  6.283185307179586  6.283185307179586  6.283185307179586
+geometry.is_periodic =  1  1  1
+
+# ---- Base level discretization ----
+amr.n_cell           =  32  32  32
+amr.max_level        =  0
+amr.blocking_factor  =  8
+amr.max_grid_size    =  32
+amr.v                =  1
+
+# ---- Solver parameters ----
+ins.nu               =  1.0e-2     # Re ≈ 100 for U=L=1
+ins.cfl              =  0.5
+ins.t_stop           =  5.0
+ins.max_step         =  500
+ins.plot_int         =  20
+ins.cn_order         =  2          # Neumann-series truncation order
+ins.verbose          =  1
+ins.plot_prefix      =  plt

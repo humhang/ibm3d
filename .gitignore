@@ -1,0 +1,53 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+
+# CMake artifacts at the top level
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+Makefile
+
+# clangd / language-server caches
+.cache/
+.ccls-cache/
+.clangd/
+
+# JetBrains (CLion, IntelliJ, etc.)
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# Zed (per-machine tasks, debug configs, settings)
+.zed/
+
+# Claude Code (per-machine permissions and session settings)
+.claude/
+
+# Vim / Emacs / general editor swap files
+*.swp
+*.swo
+*~
+.#*
+\#*#
+
+# macOS
+.DS_Store
+
+# Linux
+.directory
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Misc temp files
+*.log
+core
+core.*
