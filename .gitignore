@@ -4,6 +4,11 @@ build-*/
 cmake-build-*/
 out/
 
+# AMReX plotfiles / checkpoints / backtraces
+plt*/
+chk*/
+Backtrace.*
+
 # CMake artifacts at the top level
 compile_commands.json
 CMakeCache.txt

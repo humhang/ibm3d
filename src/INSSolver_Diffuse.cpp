@@ -122,7 +122,8 @@ void INSSolver::ApplyBNFace(int lev, int dir, const MultiFab &src,
   // inhomogeneous wall data is re-imposed on u* afterwards by
   // EnforceVelDirichlet (standard treatment for low truncation order).
   MultiFab term(fba, dm, 1, 2);
-  MultiFab::Copy(term, src, 0, 0, 1, std::min(src.nGrow(), 2));
+  term.setVal(0.0); // C/F ghosts deterministically 0 (per-level approx)
+  MultiFab::Copy(term, src, 0, 0, 1, 0);
   FillVelGhostPhys(lev, dir, term, /*homogeneous=*/true);
 
   MultiFab Lterm(fba, dm, 1, 0);

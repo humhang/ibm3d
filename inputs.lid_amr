@@ -1,0 +1,56 @@
+# ============================================================
+# inputs.lid_amr — lid-driven cavity with 2 levels of AMR
+#
+# Same cavity as inputs.lid (Re = 100, moving top wall) but with
+# two refinement levels (max_level = 2, 2x each).  Refinement is
+# driven by vorticity magnitude, which is strongest in the wall
+# boundary layers and at the two top corners where the moving lid
+# meets the stationary side walls — so the refined patches DO
+# touch the domain boundary.  This exercises the physical-BC /
+# coarse-fine interaction that the periodic and interior-refined
+# tests do not.
+#
+#   ./build-release/src/ins_solver inputs.lid_amr
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  0.0  0.0  0.0
+geometry.prob_hi     =  1.0  1.0  0.125
+geometry.is_periodic =  0  0  1
+
+# ---- Grid / AMR ----
+amr.n_cell           =  64  64  8
+amr.max_level        =  2
+amr.ref_ratio        =  2  2
+amr.blocking_factor  =  8
+amr.max_grid_size    =  32
+amr.n_error_buf      =  2
+amr.grid_eff         =  0.7
+amr.v                =  1
+
+# ---- Boundary conditions ----
+ins.bc_xlo = noslip
+ins.bc_xhi = noslip
+ins.bc_ylo = noslip
+ins.bc_yhi = noslip
+ins.bc_zlo = periodic
+ins.bc_zhi = periodic
+
+ins.vel_yhi = 1.0 0.0 0.0     # moving lid (tangential)
+
+# ---- Refinement criterion ----
+ins.regrid_int       =  10
+ins.refine_vort      =  8.0   # tag |omega| > 8 (near-wall + corners)
+
+# ---- Solver ----
+ins.ic               =  quiescent
+ins.nu               =  1.0e-2     # Re = 100
+ins.cfl              =  0.4
+ins.t_stop           =  40.0
+ins.max_step         =  400
+ins.plot_int         =  50
+ins.cn_order         =  1
+ins.poisson_tol      =  1.0e-10
+ins.poisson_max_iter =  1000
+ins.verbose          =  1
+ins.plot_prefix      =  plt_lid_amr

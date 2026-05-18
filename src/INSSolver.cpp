@@ -16,7 +16,9 @@
 #include <AMReX_Print.H>
 #include <AMReX_TagBox.H>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 using namespace amrex;
 
@@ -115,6 +117,7 @@ void INSSolver::ComputeDt() {
     return;
   }
 
+  // ---- Advective CFL (∞ when the field is at rest) ----
   Real max_inv = 0.0;
   for (int lev = 0; lev <= finest_level; ++lev) {
     const Real *dx = geom[lev].CellSize();
@@ -124,16 +127,29 @@ void INSSolver::ComputeDt() {
     }
   }
   ParallelDescriptor::ReduceRealMax(max_inv);
+  const Real dt_adv =
+      (max_inv > 0.0) ? (m_cfl / max_inv) : std::numeric_limits<Real>::max();
 
-  if (max_inv > 0.0) {
-    m_dt = m_cfl / max_inv;
-  } else {
-    const Real *dx = geom[finest_level].CellSize();
-    Real h2 = dx[0] * dx[0];
-    for (int d = 1; d < AMREX_SPACEDIM; ++d)
-      h2 = std::min(h2, dx[d] * dx[d]);
-    m_dt = 0.25 * h2 / std::max(m_nu, 1.0e-12);
-  }
+  // ---- Diffusive limit set by Neumann-series stability ----
+  // B^N = Σ (εL)^k approximates (I − εL)^{-1} only if the spectral
+  // radius ε‖L‖ < 1.  ‖L‖ = 4·dim/h² (discrete Laplacian) and
+  // ε = ν dt/2, so ε‖L‖ = 2·dim·ν·dt/h².  Cap dt so ε‖L‖ ≤ α with
+  // α = 0.5 — beyond ε‖L‖ ≥ 1 the modified-Poisson operator D B^N G
+  // turns indefinite and the CG converges to garbage (lid cavity
+  // with the viscous-limited dt was hitting ε‖L‖ = 1.5).
+  const Real alpha = 0.5;
+  const Real *dxf = geom[finest_level].CellSize();
+  Real h2 = dxf[0] * dxf[0];
+  for (int d = 1; d < AMREX_SPACEDIM; ++d)
+    h2 = std::min(h2, dxf[d] * dxf[d]);
+  const Real dt_diff =
+      alpha * h2 / (2.0 * AMREX_SPACEDIM * std::max(m_nu, 1.0e-12));
+
+  m_dt = std::min(dt_adv, dt_diff);
+
+  if (m_verbose > 1)
+    amrex::Print() << "  dt: adv=" << dt_adv << " diff=" << dt_diff
+                   << " -> " << m_dt << "\n";
 }
 
 // ============================================================
@@ -386,6 +402,12 @@ void INSSolver::FillFacePatch(int lev, int dir, Vector<FaceMFArray> &source,
     Vector<Real> st{time};
     FillPatchSingleLevel(dst, time, smf, st, 0, 0, 1, geom[lev], bc_func, 0);
   } else {
+    // The coarse source must carry correct domain-boundary ghosts
+    // BEFORE the two-level interpolation: PhysBCFunctNoOp does not
+    // fill them, and fine patches that hug a wall (e.g. the lid)
+    // interpolate from coarse cells that would otherwise be garbage.
+    FillVelGhostPhys(lev - 1, dir, *source[lev - 1][dir],
+                     /*homogeneous=*/false);
     Vector<MultiFab *> cmf{source[lev - 1][dir].get()};
     Vector<MultiFab *> fmf{source[lev][dir].get()};
     Vector<Real> ct{time}, ft{time};
@@ -406,12 +428,23 @@ void INSSolver::FillCellPatch(int lev,
     Vector<Real> st{time};
     FillPatchSingleLevel(dst, time, smf, st, 0, 0, 1, geom[lev], bc_func, 0);
   } else {
+    // Fill the coarse source's domain-boundary ghosts first (see the
+    // FillFacePatch note) so the coarse→fine interpolation near a
+    // wall does not read uninitialised coarse ghost cells.
+    FillPresGhostPhys(lev - 1, *source[lev - 1]);
     Vector<MultiFab *> cmf{source[lev - 1].get()};
     Vector<MultiFab *> fmf{source[lev].get()};
     Vector<Real> ct{time}, ft{time};
+    // Piecewise-constant C/F interpolation (not lincc): conservative-
+    // linear computes slopes that read the coarse scratch's
+    // domain-boundary ghosts, which FillPatchTwoLevels leaves
+    // uninitialised under PhysBCFunctNoOp → NaN for fine patches that
+    // hug a wall (the lid).  pc_interp uses no slopes, so it is
+    // immune.  The per-level pressure C/F coupling is already
+    // approximate, so the order reduction here is acceptable.
     FillPatchTwoLevels(dst, time, cmf, ct, fmf, ft, 0, 0, 1, geom[lev - 1],
                        geom[lev], bc_func, 0, bc_func, 0, ref_ratio[lev - 1],
-                       &lincc_interp, bcs, 0);
+                       &pc_interp, bcs, 0);
   }
   FillPresGhostPhys(lev, dst);
 }

@@ -89,6 +89,81 @@ Decisions baked into the current solver, with rationale:
      after the BC layer (periodic short-circuits the boundary loop).
      `inputs.lid` (cavity) and `inputs.channel` (in/outflow) were
      written and code-reviewed but NOT run-verified in the
-     2026-05-15 session (the bash tool intermittently refused to
-     launch the binary).  First action next session: run both and
-     confirm stability + sane flow.
+     2026-05-15 session.
+
+10. **Per-level operator must zero its coarse–fine ghosts**
+    (bug found + fixed 2026-05-18, `inputs.lid_amr`).  The per-level
+    modified-Poisson CG (`SolveModifiedPoisson` / `ApplyBNFace` /
+    `ApplyModifiedPoissonOp`) only fills ghosts via `FillBoundary` +
+    domain physical BC.  It does **not** interpolate C/F ghosts from
+    coarse.  When a fine patch has an *interior* C/F interface (as in
+    the lid cavity, where vorticity tagging hugs the walls) the
+    working MultiFabs' C/F ghost cells were uninitialised → `G φ`
+    read garbage → `dAd ~ −1e16` on step 1 → dt collapsed to ~1e-18
+    → blow-up.  The periodic TG-AMR test never caught this because
+    `refine_vort` tagged the whole domain, so the fine level was the
+    full (periodic) domain with no interior C/F interface.
+    The lid-cavity AMR debugging on 2026-05-18 turned out to be a
+    **cascade of four distinct bugs**, all fixed; the final working
+    scheme is recorded here so nobody re-derives it:
+
+    1. **dt / Neumann-series stability** (`ComputeDt`).  `B^N` only
+       approximates `(I−εL)^{-1}` when `ε‖L‖ = 2·dim·ν·dt/h² < 1`;
+       beyond `ε‖L‖≥1` the operator `D B^N G` turns indefinite.  The
+       old quiescent-IC fallback `dt = 0.25 h²/ν` gave `ε‖L‖ = 1.5`.
+       Fix: cap dt every step at `dt_diff = α h²/(2·dim·ν)` with
+       `α = 0.5` (so `ε‖L‖ ≤ 0.5`), using the *finest* level's h, and
+       take `min(dt_adv, dt_diff)`.  Periodic TG is CFL-limited so its
+       dt is unchanged (bit-identical regression preserved).
+
+    2. **C/F pressure must be Dirichlet-from-coarse, not 0**.  The
+       per-level "Dirichlet-0 at C/F" idea (zeroing the fine pressure
+       C/F ghost) injects an O(p_true/dx) artificial gradient — the
+       lid-cavity fine patches sit on the high-pressure corners, so it
+       blew up.  Fix: solve coarse→fine and fill the fine C/F pressure
+       ghost by interpolating the *already-solved coarser* pressure
+       (`FillCellPatch` = FillPatchTwoLevels valid-from-self +
+       C/F-from-coarse, then domain physical BC).  The search-direction
+       *correction* stays homogeneous at C/F (its ghost = 0).  Use a
+       SEPARATE ghost buffer `p_g` for the operator-on-p apply —
+       `FillPatchTwoLevels` must not alias dst with the fine source
+       (single-level lev 0 tolerates the alias; two-level NaNs).
+
+    3. **Mean-pin only truly-singular levels**.  `m_pressure_singular`
+       is global (no outflow).  A partial fine patch with
+       Dirichlet-from-coarse C/F is NOT singular — pinning its mean
+       corrupts it.  Gate: `level_singular = m_pressure_singular &&
+       grids[lev].numPts()==Domain(lev).numPts()` (full-domain level
+       only).  Preserves periodic-TG-AMR (fine = full periodic domain
+       → still pinned).
+
+    4. **C/F pressure interp must be piecewise-constant**, not
+       conservative-linear.  `FillPatchTwoLevels` builds an internal
+       coarse scratch, fills only its valid from the coarse source,
+       then runs the coarse BC functor — which is `PhysBCFunctNoOp`,
+       so the scratch's domain ghosts stay uninitialised.
+       `lincc_interp` computes slopes that read them → NaN for fine
+       patches hugging a wall.  `&pc_interp` uses no slopes → immune.
+       (Filling the *real* coarse MF's ghosts does NOT help — FillPatch
+       uses its own scratch.)
+
+    5. **Per-level operator is non-symmetric → use BiCGStab, not CG**.
+       Once a fine patch has a C/F interface the staggered `B^N` plus
+       ad-hoc C/F ghost breaks D/G adjointness, so `−D B^N G` is not
+       SPD; CG diverges (`|Gp|2` 1e7→1e16, oscillating).  The coarse
+       full-domain level has no C/F so CG worked there (masked it).
+       `SolveModifiedPoisson` is now matrix-free **BiCGStab** with
+       breakdown guards.  Converges ~80–190 iters/level to 1e-11 on
+       all three lid-cavity AMR levels.
+
+    **Verified 2026-05-18**: single-level lid `|div u|~3e-11`;
+    1-level AMR lid stable, `|u|` tracks single-level, `|div u|~1e-2`
+    at C/F; full 2-level `inputs.lid_amr` stable, `|u|` 0.07→0.23
+    smooth, `|div u|~2e-2` (bounded, steady).  The residual
+    `|div u|~1e-2` at C/F is the *expected* per-level-approximation
+    error (Dirichlet-from-coarse, no reflux) — interior is
+    divergence-free.  A proper composite `D B^N G` with reflux remains
+    the deferred refactor for when C/F divergence must vanish.  Do NOT
+    "simplify" away: the four `setVal(0)`/buffer choices, the
+    `pc_interp`, the `level_singular` gate, and BiCGStab are all
+    load-bearing.

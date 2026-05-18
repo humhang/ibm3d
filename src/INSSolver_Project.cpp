@@ -53,6 +53,12 @@ void INSSolver::ApplyModifiedPoissonOp(int lev, const MultiFab &phi,
     MultiFab gphi(fba, dm, 1, 2); // 2 ghosts for B^N's L applications
     bgphi[d].define(fba, dm, 1, 0);
 
+    // Zero everything first so that coarse–fine ghost cells (which the
+    // per-level operator never fills) are a deterministic 0 — the
+    // per-level "Dirichlet-0 at C/F" approximation.  Without this they
+    // are uninitialised and the operator blows up whenever a fine
+    // patch has an interior C/F interface (e.g. the lid cavity).
+    gphi.setVal(0.0);
     ComputePressureGradient(lev, d, phi, gphi);
     FillVelGhostPhys(lev, d, gphi, /*homogeneous=*/true);
 
@@ -110,68 +116,120 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
 
-  // For a pure Neumann/periodic pressure system the solution is
-  // defined only up to a constant — pin it by subtracting the mean
-  // of the RHS and the warm-start.  With an outflow (Dirichlet p=0)
-  // the system is non-singular and the mean must NOT be removed.
+  // A level's pressure problem is singular (solution defined up to a
+  // constant) only when it is pure Neumann/periodic — i.e. no outflow
+  // (m_pressure_singular) AND the level tiles the whole (refined)
+  // domain so there is no coarse–fine interface supplying Dirichlet
+  // data.  A partial fine patch gets Dirichlet-from-coarse at its C/F
+  // boundary and is non-singular: pinning its mean would corrupt it.
+  const bool level_singular =
+      m_pressure_singular &&
+      (grids[lev].numPts() == geom[lev].Domain().numPts());
+
   MultiFab rhs(ba, dm, 1, 0);
   MultiFab::Copy(rhs, rhs_in, 0, 0, 1, 0);
-  if (m_pressure_singular) {
+  if (level_singular) {
     SubtractMean(lev, rhs);
     SubtractMean(lev, p);
   }
 
-  // Working MFs
-  MultiFab r(ba, dm, 1, 0);
-  MultiFab d_(ba, dm, 1, 1); // search direction; 1 ghost for op apply
-  MultiFab Ad(ba, dm, 1, 0);
+  // Boundary data for p: domain physical BCs AND, at the C/F
+  // interface, the already-solved coarser pressure interpolated in
+  // (Dirichlet-from-coarse level solve — IAMR style).  Separate ghost
+  // buffer (FillCellPatch's FillPatchTwoLevels must not alias the fine
+  // source).  p_g.valid = this level's p, p_g C/F = coarse-interp.
+  MultiFab p_g(ba, dm, 1, 1);
+  FillCellPatch(lev, m_pressure, p_g, m_cur_time, m_bc_pres);
 
-  // r0 = rhs − A p
-  FillPresGhostPhys(lev, p);
-  ApplyModifiedPoissonOp(lev, p, Ad); // Ad temporarily = A p
-  MultiFab::LinComb(r, 1.0_rt, rhs, 0, -1.0_rt, Ad, 0, 0, 1, 0);
+  // ---- Matrix-free BiCGStab ----
+  // The per-level operator −D B^N G is NOT symmetric once a fine patch
+  // has a coarse–fine interface (the staggered B^N + ad-hoc C/F ghost
+  // breaks the D/G adjointness).  CG diverges on it; BiCGStab tolerates
+  // the asymmetry.  All search vectors are *corrections*: homogeneous
+  // at C/F (ghost = 0 via setVal, never refilled there) — only
+  // FillPresGhostPhys touches their domain ghosts before each apply.
+  MultiFab rr(ba, dm, 1, 0), rhat(ba, dm, 1, 0);
+  MultiFab pv(ba, dm, 1, 1), v(ba, dm, 1, 0);
+  MultiFab s(ba, dm, 1, 1), t(ba, dm, 1, 0);
+  MultiFab Ax(ba, dm, 1, 0);
+  pv.setVal(0.0);
+  s.setVal(0.0);
 
-  MultiFab::Copy(d_, r, 0, 0, 1, 0);
+  // r0 = rhs − A p_g
+  ApplyModifiedPoissonOp(lev, p_g, Ax);
+  MultiFab::LinComb(rr, 1.0_rt, rhs, 0, -1.0_rt, Ax, 0, 0, 1, 0);
+  MultiFab::Copy(rhat, rr, 0, 0, 1, 0);
 
-  Real rsold = MultiFab::Dot(r, 0, r, 0, 1, 0);
   const Real rhs_norm2 = MultiFab::Dot(rhs, 0, rhs, 0, 1, 0);
   const Real tol2 =
       m_poisson_tol * m_poisson_tol * std::max(rhs_norm2, Real(1.0e-300));
 
+  Real rho = 1.0, alpha = 1.0, omega = 1.0;
+  v.setVal(0.0);
+  Real rsold = MultiFab::Dot(rr, 0, rr, 0, 1, 0);
+
+  const Real tiny = 1.0e-300;
   int iter = 0;
   for (; iter < m_poisson_max_iter; ++iter) {
-    if (rsold < tol2)
+    if (rsold < tol2 || !std::isfinite(rsold))
       break;
 
-    FillPresGhostPhys(lev, d_);
-    ApplyModifiedPoissonOp(lev, d_, Ad);
+    const Real rho_new = MultiFab::Dot(rhat, 0, rr, 0, 1, 0);
+    if (std::abs(rho_new) < tiny)
+      break; // breakdown
+    const Real beta = (rho_new / rho) * (alpha / omega);
 
-    Real dAd = MultiFab::Dot(d_, 0, Ad, 0, 1, 0);
-    if (dAd <= 0.0) {
-      Print() << "  WARNING: Perot CG dAd <= 0 (" << dAd
-              << ") — operator non-positive on this iterate.\n";
+    // pv ← rr + beta (pv − omega v)
+    MultiFab::LinComb(pv, 1.0_rt, pv, 0, -omega, v, 0, 0, 1, 0);
+    MultiFab::LinComb(pv, beta, pv, 0, 1.0_rt, rr, 0, 0, 1, 0);
+
+    FillPresGhostPhys(lev, pv);
+    ApplyModifiedPoissonOp(lev, pv, v);
+
+    const Real rhatv = MultiFab::Dot(rhat, 0, v, 0, 1, 0);
+    if (std::abs(rhatv) < tiny)
+      break;
+    alpha = rho_new / rhatv;
+
+    // s ← rr − alpha v
+    MultiFab::LinComb(s, 1.0_rt, rr, 0, -alpha, v, 0, 0, 1, 0);
+
+    const Real s2 = MultiFab::Dot(s, 0, s, 0, 1, 0);
+    if (s2 < tol2) {
+      MultiFab::Saxpy(p, alpha, pv, 0, 0, 1, 0);
+      rsold = s2;
+      ++iter;
       break;
     }
-    Real alpha = rsold / dAd;
 
-    MultiFab::Saxpy(p, alpha, d_, 0, 0, 1, 0);
-    MultiFab::Saxpy(r, -alpha, Ad, 0, 0, 1, 0);
+    FillPresGhostPhys(lev, s);
+    ApplyModifiedPoissonOp(lev, s, t);
 
-    Real rsnew = MultiFab::Dot(r, 0, r, 0, 1, 0);
-    Real beta = rsnew / rsold;
-    // d ← r + β d
-    MultiFab::LinComb(d_, beta, d_, 0, 1.0_rt, r, 0, 0, 1, 0);
-    rsold = rsnew;
+    const Real tt = MultiFab::Dot(t, 0, t, 0, 1, 0);
+    omega = (tt > tiny) ? MultiFab::Dot(t, 0, s, 0, 1, 0) / tt : 0.0;
+
+    // p ← p + alpha pv + omega s
+    MultiFab::Saxpy(p, alpha, pv, 0, 0, 1, 0);
+    MultiFab::Saxpy(p, omega, s, 0, 0, 1, 0);
+
+    // rr ← s − omega t
+    MultiFab::LinComb(rr, 1.0_rt, s, 0, -omega, t, 0, 0, 1, 0);
+
+    rho = rho_new;
+    rsold = MultiFab::Dot(rr, 0, rr, 0, 1, 0);
+    if (std::abs(omega) < tiny)
+      break; // breakdown
   }
 
-  // Re-pin the mean of the solution (singular system only).
-  if (m_pressure_singular)
+  // Re-pin the mean of the solution (truly-singular level only).
+  if (level_singular)
     SubtractMean(lev, p);
 
   if (m_verbose > 1) {
     const Real relres =
-        std::sqrt(rsold / std::max(rhs_norm2, Real(1.0e-300)));
-    Print() << "  Perot CG lev " << lev << ": " << iter
+        std::sqrt(std::max(rsold, Real(0.0)) /
+                  std::max(rhs_norm2, Real(1.0e-300)));
+    Print() << "  Perot BiCGStab lev " << lev << ": " << iter
             << " iters, |r|/|rhs| = " << relres << "\n";
   }
   return iter;
@@ -230,9 +288,11 @@ void INSSolver::ProjectPerot() {
     // Projection:  u^{n+1} = u* − dt B^N G p^{n+1}
     //  (same B^N as in the predictor and the operator — this is the
     //   Perot consistency that makes the projection exact.)
+    // Same C/F (Dirichlet-from-coarse) + domain BC fill the operator
+    // used inside the solve — the projection's ∇p must be applied to
+    // the *identical* ghost-filled pressure or D u^{n+1} ≠ 0.
     MultiFab phi_g(ba, dm, 1, 1);
-    MultiFab::Copy(phi_g, *m_pressure[lev], 0, 0, 1, 0);
-    FillPresGhostPhys(lev, phi_g);
+    FillCellPatch(lev, m_pressure, phi_g, m_cur_time, m_bc_pres);
 
     std::array<MultiFab *, AMREX_SPACEDIM> vel_out;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
