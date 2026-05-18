@@ -1,6 +1,7 @@
 set(SOURCES
         main.cpp
         INSSolver.cpp
+        INSSolver_BC.cpp
         INSSolver_Advect.cpp
         INSSolver_Diffuse.cpp
         INSSolver_Project.cpp

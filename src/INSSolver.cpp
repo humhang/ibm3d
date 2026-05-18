@@ -25,20 +25,8 @@ using namespace amrex;
 // ============================================================
 INSSolver::INSSolver() {
   ReadParameters();
-
-  // All-periodic ⇒ BCRec is "interior" in every direction.
-  m_bc_pres.resize(1);
-  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-    m_bc_pres[0].setLo(d, BCType::int_dir);
-    m_bc_pres[0].setHi(d, BCType::int_dir);
-  }
-  for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-    m_bc_vel[dir].resize(1);
-    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-      m_bc_vel[dir][0].setLo(d, BCType::int_dir);
-      m_bc_vel[dir][0].setHi(d, BCType::int_dir);
-    }
-  }
+  ParseBCs();
+  BuildBCRecs();
 
   // Build the initial hierarchy (drives MakeNewLevelFromScratch on each level
   // up to max_level).  AmrCore handles tagging through ErrorEst.
@@ -75,6 +63,7 @@ void INSSolver::ReadParameters() {
   pp.query("poisson_max_iter", m_poisson_max_iter);
   pp.query("verbose", m_verbose);
   pp.query("plot_prefix", m_plot_prefix);
+  pp.query("ic", m_ic);
 }
 
 // ============================================================
@@ -262,6 +251,19 @@ void INSSolver::InitFlowField(int lev) {
   const Real *dx = gm.CellSize();
   const Real *plo = gm.ProbLo();
 
+  if (m_ic == "quiescent") {
+    // Start from rest; the boundary conditions drive the flow
+    // (lid-driven cavity, channel inflow/outflow, …).
+    for (int d = 0; d < AMREX_SPACEDIM; ++d)
+      m_vel[lev][d]->setVal(0.0);
+    m_pressure[lev]->setVal(0.0);
+    for (int d = 0; d < AMREX_SPACEDIM; ++d)
+      FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
+    FillPresGhostPhys(lev, *m_pressure[lev]);
+    return;
+  }
+
+  // Default: 3D Taylor–Green vortex (periodic verification case).
   for (MFIter mfi(*m_pressure[lev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
     const Box &bx_cc = mfi.tilebox();
     auto const &p = m_pressure[lev]->array(mfi);
@@ -316,12 +318,13 @@ void INSSolver::InitFlowField(int lev) {
 #endif
   }
 
-  // Ensure face values shared by neighbouring patches are consistent.
+  // Ensure face values shared by neighbouring patches are consistent,
+  // then apply physical boundary conditions.
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
     m_vel[lev][d]->OverrideSync(geom[lev].periodicity());
-    m_vel[lev][d]->FillBoundary(geom[lev].periodicity());
+    FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
   }
-  m_pressure[lev]->FillBoundary(geom[lev].periodicity());
+  FillPresGhostPhys(lev, *m_pressure[lev]);
 }
 
 // ============================================================
@@ -370,7 +373,10 @@ void INSSolver::Advance() {
 }
 
 // ============================================================
-// FillPatch helpers (PhysBCFunctNoOp because BCs are all periodic)
+// FillPatch helpers.  AMReX FillPatch handles interior + C/F
+// interpolation (PhysBCFunctNoOp — the generic functor is poor for
+// staggered physical BCs); the domain-boundary ghosts are then
+// overwritten by our explicit staggered BC routines.
 // ============================================================
 void INSSolver::FillFacePatch(int lev, int dir, Vector<FaceMFArray> &source,
                               MultiFab &dst, Real time) {
@@ -387,6 +393,7 @@ void INSSolver::FillFacePatch(int lev, int dir, Vector<FaceMFArray> &source,
                        geom[lev], bc_func, 0, bc_func, 0, ref_ratio[lev - 1],
                        &face_linear_interp, m_bc_vel[dir], 0);
   }
+  FillVelGhostPhys(lev, dir, dst, /*homogeneous=*/false);
 }
 
 void INSSolver::FillCellPatch(int lev,
@@ -406,6 +413,7 @@ void INSSolver::FillCellPatch(int lev,
                        geom[lev], bc_func, 0, bc_func, 0, ref_ratio[lev - 1],
                        &lincc_interp, bcs, 0);
   }
+  FillPresGhostPhys(lev, dst);
 }
 
 // ============================================================

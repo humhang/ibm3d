@@ -78,6 +78,40 @@ Laplacian-as-operator without an internal sign flip (e.g. AMReX
   a natural future refactor when AMR divergence tolerance matters.
   Current 2-level test sees `|div u|_∞ ~ 10⁻¹¹`, at the CG tolerance.
 
+## Boundary conditions
+
+Per-domain-face, read from the input file:
+
+| `ins.bc_<face>` | velocity                       | pressure        |
+| --------------- | ------------------------------ | --------------- |
+| `periodic`      | wrap (geometry periodicity)    | wrap            |
+| `noslip`        | Dirichlet `u = ins.vel_<face>` | Neumann ∂p/∂n=0 |
+| `inflow`        | Dirichlet `u = ins.vel_<face>` | Neumann ∂p/∂n=0 |
+| `slip`          | `u·n = 0`, tangential ∂/∂n = 0 | Neumann ∂p/∂n=0 |
+| `outflow`       | zero-gradient ∂u/∂n = 0        | Dirichlet p = 0 |
+
+`<face>` ∈ {`xlo`,`xhi`,`ylo`,`yhi`,`zlo`,`zhi`}.  `noslip` and
+`inflow` are numerically identical (a prescribed velocity vector on
+the boundary); the names just document intent.  A non-zero
+`ins.vel_<face>` on a `noslip` face is a *moving wall* (e.g. the
+lid-driven cavity lid).  A periodic direction must be periodic on
+both faces and match `geometry.is_periodic` (validated at startup).
+
+The Dirichlet-velocity ⇒ Neumann-pressure / outflow-velocity ⇒
+Dirichlet-pressure pairing is the standard projection-method choice.
+When no face is `outflow` the pressure system is singular (pure
+Neumann/periodic) and its mean is pinned; an `outflow` face makes it
+non-singular and the mean is left free.
+
+Staggered-grid specifics live in `src/INSSolver_BC.cpp`: the
+component normal to a wall sits exactly on the boundary face (set
+directly for Dirichlet, extrapolated for outflow); tangential
+components are reflected about the wall value half a cell away.
+The truncated-Neumann-series operator applications use *homogeneous*
+wall data; the prescribed velocity is re-imposed on `u*` and
+`u^{n+1}` by `EnforceVelDirichlet` after the predictor and the
+projection (standard treatment for low truncation order).
+
 ## Build / run
 
 All standard operations are wired up as Zed tasks in `.zed/tasks.json`
@@ -103,18 +137,22 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 
 ## Test inputs
 
-| File             | Configuration                                                   |
-| ---------------- | --------------------------------------------------------------- |
-| `inputs`         | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100.       |
-| `inputs.tg_amr`  | 32³ base + 1 refinement level (2× ratio), vorticity tagging.    |
+| File             | Configuration                                                       |
+| ---------------- | ------------------------------------------------------------------- |
+| `inputs`         | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100.           |
+| `inputs.tg_amr`  | 32³ base + 1 refinement level (2× ratio), vorticity tagging.        |
+| `inputs.lid`     | Lid-driven cavity, Re = 100 (no-slip walls, moving lid, z-periodic).|
+| `inputs.channel` | Plane channel, uniform inflow / zero-gradient outflow, Re_h = 50.   |
 
-Both decay monotonically from the analytical TG initial condition.
-Expected behaviour at convergence:
+The Taylor–Green cases decay monotonically from the analytical IC;
+at convergence `|div u|_∞ ~ 10⁻¹¹` per step (CG tolerance dominated),
+unpreconditioned CG ~40–80 iters at 32³, `|u|_∞` decays with the
+viscous rate.
 
-- `|div u|_∞ ~ 10⁻¹¹` per step (CG tolerance dominated; tighten
-  `ins.poisson_tol` for stricter divergence).
-- Unpreconditioned CG converges in ~40–80 iters per solve at 32³.
-- `|u|_∞` decreases smoothly with the viscous dissipation rate.
+The lid-driven cavity should approach a steady recirculating vortex;
+the channel relaxes the uniform inlet toward the parabolic Poiseuille
+profile and reports a *non-singular* pressure system (outflow pins
+the pressure, so the mean is not removed).
 
 ## What's _not_ implemented yet
 
@@ -122,7 +160,13 @@ Expected behaviour at convergence:
   system; see the `AGENTS.md` notes for the planned Trilinos /
   matrix-free path.  Trilinos has been temporarily removed from
   CMakeLists.txt and will return when this phase begins.
-- Wall / inflow / outflow BCs (all-periodic only at this stage).
 - Temporal subcycling between AMR levels.
 - Sync-solve refluxing of `∇φ` (the projection is "approximate" — the
   per-level local gradient plus a post-projection `average_down`).
+- Inhomogeneous Dirichlet data inside the truncated Neumann series
+  (handled approximately: homogeneous in the series, re-imposed on
+  `u*`/`u^{n+1}` afterwards — fine for low truncation order N).
+- A proper composite `D B^N G` for AMR + non-periodic BCs (the
+  domain-boundary physical BC is applied per-level after FillPatch;
+  refinement is kept interior in the supplied tests so C/F and
+  domain boundaries don't coincide).

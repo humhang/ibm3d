@@ -54,7 +54,7 @@ void INSSolver::ApplyModifiedPoissonOp(int lev, const MultiFab &phi,
     bgphi[d].define(fba, dm, 1, 0);
 
     ComputePressureGradient(lev, d, phi, gphi);
-    gphi.FillBoundary(geom[lev].periodicity());
+    FillVelGhostPhys(lev, d, gphi, /*homogeneous=*/true);
 
     ApplyBNFace(lev, d, gphi, bgphi[d]);
   }
@@ -110,11 +110,16 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
 
-  // Pin the null space: subtract mean from both rhs and the warm-start p.
+  // For a pure Neumann/periodic pressure system the solution is
+  // defined only up to a constant — pin it by subtracting the mean
+  // of the RHS and the warm-start.  With an outflow (Dirichlet p=0)
+  // the system is non-singular and the mean must NOT be removed.
   MultiFab rhs(ba, dm, 1, 0);
   MultiFab::Copy(rhs, rhs_in, 0, 0, 1, 0);
-  SubtractMean(lev, rhs);
-  SubtractMean(lev, p);
+  if (m_pressure_singular) {
+    SubtractMean(lev, rhs);
+    SubtractMean(lev, p);
+  }
 
   // Working MFs
   MultiFab r(ba, dm, 1, 0);
@@ -122,7 +127,7 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
   MultiFab Ad(ba, dm, 1, 0);
 
   // r0 = rhs − A p
-  p.FillBoundary(geom[lev].periodicity());
+  FillPresGhostPhys(lev, p);
   ApplyModifiedPoissonOp(lev, p, Ad); // Ad temporarily = A p
   MultiFab::LinComb(r, 1.0_rt, rhs, 0, -1.0_rt, Ad, 0, 0, 1, 0);
 
@@ -138,7 +143,7 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
     if (rsold < tol2)
       break;
 
-    d_.FillBoundary(geom[lev].periodicity());
+    FillPresGhostPhys(lev, d_);
     ApplyModifiedPoissonOp(lev, d_, Ad);
 
     Real dAd = MultiFab::Dot(d_, 0, Ad, 0, 1, 0);
@@ -159,8 +164,9 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
     rsold = rsnew;
   }
 
-  // Re-pin the mean of the solution.
-  SubtractMean(lev, p);
+  // Re-pin the mean of the solution (singular system only).
+  if (m_pressure_singular)
+    SubtractMean(lev, p);
 
   if (m_verbose > 1) {
     const Real relres =
@@ -226,20 +232,26 @@ void INSSolver::ProjectPerot() {
     //   Perot consistency that makes the projection exact.)
     MultiFab phi_g(ba, dm, 1, 1);
     MultiFab::Copy(phi_g, *m_pressure[lev], 0, 0, 1, 0);
-    phi_g.FillBoundary(geom[lev].periodicity());
+    FillPresGhostPhys(lev, phi_g);
 
+    std::array<MultiFab *, AMREX_SPACEDIM> vel_out;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
       BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
       MultiFab gp(fba, dm, 1, 2);
       MultiFab bgp(fba, dm, 1, 0);
 
       ComputePressureGradient(lev, d, phi_g, gp);
-      gp.FillBoundary(geom[lev].periodicity());
+      FillVelGhostPhys(lev, d, gp, /*homogeneous=*/true);
 
       ApplyBNFace(lev, d, gp, bgp);
 
       MultiFab::Copy(*m_vel[lev][d], *m_vstar[lev][d], 0, 0, 1, 0);
       MultiFab::Saxpy(*m_vel[lev][d], -m_dt, bgp, 0, 0, 1, 0);
+      vel_out[d] = m_vel[lev][d].get();
     }
+
+    // Re-impose the prescribed wall velocity (the local projection
+    // does not preserve inhomogeneous Dirichlet data exactly).
+    EnforceVelDirichlet(lev, vel_out);
   }
 }

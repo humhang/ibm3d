@@ -4,17 +4,18 @@ description: One-line purpose for every source file, so future agents don't have
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-`src/` layout (as of 2026-05-15):
+`src/` layout (as of 2026-05-15, third iteration — Perot + physical BCs):
 
 | File                     | Role                                                                                |
 |--------------------------|-------------------------------------------------------------------------------------|
 | `main.cpp`               | Trivial entry: `amrex::Initialize` → `INSSolver{}` → `InitData` → `Run`.            |
-| `INSSolver.H`            | Class declaration, `AmrCore` overrides, FillPatch/AverageDown helper signatures.     |
-| `INSSolver.cpp`          | Constructor, ParmParse, time loop, AmrCore hooks (MakeNewLevelFromScratch, MakeNewLevelFromCoarse, RemakeLevel, ClearLevel, ErrorEst), FillPatch helpers, average-down, plotfile writer, IC (3D Taylor–Green). |
-| `INSSolver_Advect.cpp`   | `ComputeAdvection(lev, adv, vel_in)` — face-by-face `-(u·∇)u` on the MAC grid; takes already-FillPatched `vel_in`. |
-| `INSSolver_Diffuse.cpp`  | `ApplyFaceLaplacian`, `ComputePressureGradient`, `ApplyCNDiffusion` (builds `u*` via Neumann series). |
-| `INSSolver_Project.cpp`  | `ProjectComposite()` — average-down `u*`, build RHS, MLMG composite Poisson, per-level gradient + projection, `p ← p + φ`. |
-| `CMakeLists.txt`         | Standalone executable target `ins_solver`, links MPI + AMReX (Trilinos not currently needed). |
+| `INSSolver.H`            | Class declaration, `BCKind` enum, per-face BC storage, helper signatures.            |
+| `INSSolver.cpp`          | Constructor, ParmParse, time loop, AmrCore hooks, FillPatch helpers (call physical BC after AMReX FillPatch), average-down, plotfile, IC (Taylor–Green *or* quiescent for BC-driven flows). |
+| `INSSolver_BC.cpp`       | `ParseBCs`, `BuildBCRecs`, `FillVelGhostPhys` (Dirichlet/slip/outflow, normal vs tangential staggered handling, homogeneous flag), `FillPresGhostPhys` (Neumann walls / Dirichlet-0 outflow), `EnforceVelDirichlet`. |
+| `INSSolver_Advect.cpp`   | `ComputeAdvection(lev, adv, vel_in)` — face-by-face `-(u·∇)u`; `vel_in` already FillPatched + physical-BC filled. |
+| `INSSolver_Diffuse.cpp`  | `ApplyFaceLaplacian`, `ComputePressureGradient`, `ApplyBNFace` (B^N, homogeneous wall data), `ApplyCNDiffusion` (Perot predictor, then `EnforceVelDirichlet`). |
+| `INSSolver_Project.cpp`  | `ApplyModifiedPoissonOp` (−D B^N G), `SolveModifiedPoisson` (matrix-free CG, mean-pin gated by `m_pressure_singular`), `ProjectPerot` (per-level solve+project, `EnforceVelDirichlet`). |
+| `CMakeLists.txt`         | Executable `ins_solver`, links MPI + AMReX (Trilinos not currently needed). |
 
 Top-level files:
 
@@ -23,6 +24,8 @@ Top-level files:
 | `CMakeLists.txt`       | `find_package(MPI)`, `find_package(AMReX)`, sets C++20.                    |
 | `inputs`               | Single-level Taylor–Green test (`max_level=0`, 32³).                       |
 | `inputs.tg_amr`        | 2-level AMR Taylor–Green test (`max_level=1`, vorticity tagging).          |
+| `inputs.lid`           | Lid-driven cavity (all-Dirichlet, singular pressure, `ic=quiescent`).      |
+| `inputs.channel`       | Inflow/outflow channel (non-singular pressure).                           |
 | `AGENTS.md`            | Coding-style + Zed-task documentation.                                     |
 | `.clang-format`        | `BasedOnStyle: LLVM`, `Standard: c++20`.                                   |
 | `.zed/tasks.json`      | Configure/build/clean/run/debug tasks pinning AMReX_DIR.                   |

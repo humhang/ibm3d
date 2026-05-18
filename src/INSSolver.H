@@ -5,6 +5,7 @@
 #include <AMReX_BCRec.H>
 #include <AMReX_Geometry.H>
 #include <AMReX_MultiFab.H>
+#include <AMReX_RealVect.H>
 
 #include <array>
 #include <memory>
@@ -51,6 +52,18 @@
 /// consistent at the C/F interface.  A proper composite D B^N G — with
 /// fine ghosts of every intermediate face term FillPatched from coarse
 /// and average_down between L applications — is feasible but deferred.
+/// Per-domain-face boundary condition kind.
+///
+///   periodic   handled by AMReX geometry periodicity
+///   dirichlet  prescribed velocity vector (no-slip wall, moving lid,
+///              or inflow — all the same numerically: u = g on the
+///              boundary).  Pressure: homogeneous Neumann ∂p/∂n = 0.
+///   slip       free-slip wall: normal velocity = 0, tangential
+///              zero-gradient.  Pressure: homogeneous Neumann.
+///   outflow    velocity zero-gradient (Neumann).  Pressure:
+///              homogeneous Dirichlet p = 0.
+enum class BCKind { periodic, dirichlet, slip, outflow };
+
 class INSSolver : public amrex::AmrCore {
 public:
   INSSolver();
@@ -87,6 +100,17 @@ private:
   int m_poisson_max_iter = 500;
   int m_verbose = 1;
   std::string m_plot_prefix = "plt";
+  std::string m_ic = "taylor_green"; ///< "taylor_green" | "quiescent"
+
+  // ---------------- Boundary conditions ----------------
+  // Indexed by direction (0=x, 1=y, 2=z); lo and hi domain faces.
+  std::array<BCKind, AMREX_SPACEDIM> m_bc_lo{};
+  std::array<BCKind, AMREX_SPACEDIM> m_bc_hi{};
+  std::array<amrex::RealVect, AMREX_SPACEDIM> m_bcvel_lo{};
+  std::array<amrex::RealVect, AMREX_SPACEDIM> m_bcvel_hi{};
+  /// True when the pressure system is singular (no outflow ⇒ pure
+  /// Neumann/periodic ⇒ solution defined up to a constant).
+  bool m_pressure_singular = true;
 
   // ---------------- State ----------------
   amrex::Real m_cur_time = 0.0;
@@ -108,9 +132,29 @@ private:
 
   // ---------------- Helpers ----------------
   void ReadParameters();
+  void ParseBCs();      ///< read ins.bc_* / ins.vel_* and validate
+  void BuildBCRecs();   ///< translate BCKind → AMReX BCRec for FillPatch
   void AllocateLevelStorage(int lev, const amrex::BoxArray &ba,
                             const amrex::DistributionMapping &dm);
   void InitFlowField(int lev);
+
+  // ---- Physical boundary conditions (staggered grid) ----
+  /// Fill the domain-boundary ghost layer (and, for the normal
+  /// component, the boundary face itself) of velocity component
+  /// `comp`.  `homogeneous` uses zero wall data (for CG operator
+  /// applications); otherwise the prescribed `ins.vel_*` values.
+  /// Also calls FillBoundary for periodic / intra-level halos.
+  void FillVelGhostPhys(int lev, int comp, amrex::MultiFab &mf,
+                        bool homogeneous);
+  /// Fill pressure ghosts: Neumann at dirichlet/slip walls,
+  /// Dirichlet p=0 at outflow.  (Always homogeneous — pressure has
+  /// no inhomogeneous wall data in this formulation.)
+  void FillPresGhostPhys(int lev, amrex::MultiFab &mf);
+  /// Re-impose the prescribed wall velocity on a velocity field
+  /// after the predictor / projection (the linear operators do not
+  /// preserve inhomogeneous Dirichlet data exactly).
+  void EnforceVelDirichlet(
+      int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &vel);
 
   void ComputeDt();
   void Advance();

@@ -59,7 +59,36 @@ Decisions baked into the current solver, with rationale:
    above `ins.refine_vort`.  Tunable; for 3D Taylor–Green peak `|ω|≈2`,
    so a threshold of 1.0 tags the upper half of the range.
 
-9. **All-periodic BCs only** at this stage.  `m_bc_vel` / `m_bc_pres`
-   are set to `BCType::int_dir` everywhere; FillPatch uses
-   `PhysBCFunctNoOp`.  Wall / inflow / outflow BCs are deliberately
-   deferred — they touch advection, diffusion, projection, *and* IB.
+9. **Physical boundary conditions** (added 2026-05-15, third pass —
+   `src/INSSolver_BC.cpp`).  Per-domain-face, read from input:
+   `periodic` / `noslip` / `inflow` / `slip` / `outflow`.
+   - `noslip` and `inflow` are the SAME numerically: Dirichlet
+     velocity = `ins.vel_<face>` (a non-zero value on `noslip` = a
+     moving wall, e.g. the lid).  Pressure: homogeneous Neumann.
+   - `slip`: `u·n = 0`, tangential zero-gradient.  Pressure Neumann.
+   - `outflow`: velocity zero-gradient.  Pressure Dirichlet p = 0.
+   This Dirichlet-vel⇒Neumann-p / outflow-vel⇒Dirichlet-p pairing is
+   the standard projection-method choice the user specified.
+   - **Singular-system gate**: `m_pressure_singular` is true unless
+     some face is `outflow`.  `SolveModifiedPoisson` only subtracts
+     the mean of RHS/solution when singular.  Subtracting it with an
+     outflow present would remove the pressure level the outflow
+     Dirichlet pins → wrong.
+   - **Staggered handling**: normal component sits on the boundary
+     face (set directly for Dirichlet, extrapolated for outflow);
+     tangential components reflected about the wall value half a
+     cell out.  AMReX FillPatch keeps `PhysBCFunctNoOp` (interior +
+     C/F only); domain-boundary ghosts overwritten afterwards by
+     `FillVelGhostPhys`/`FillPresGhostPhys`.
+   - **Inhomogeneous data + Neumann series**: the iterated `(εL)^k`
+     terms in `B^N` use HOMOGENEOUS wall data; the prescribed
+     velocity is re-imposed on `u*` and `u^{n+1}` by
+     `EnforceVelDirichlet` after the predictor and the projection.
+     Standard low-truncation-order treatment; O(εL·boundary) error.
+   - **Tested**: periodic Taylor–Green regression is bit-identical
+     after the BC layer (periodic short-circuits the boundary loop).
+     `inputs.lid` (cavity) and `inputs.channel` (in/outflow) were
+     written and code-reviewed but NOT run-verified in the
+     2026-05-15 session (the bash tool intermittently refused to
+     launch the binary).  First action next session: run both and
+     confirm stability + sane flow.

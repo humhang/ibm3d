@@ -32,8 +32,20 @@ Key decisions already settled, do not re-litigate:
   same sign story as AMReX `MLPoisson` and bit us in this file's
   earlier revision; the projection `u^{n+1} = u* − dt B^N G p` still
   uses the natural `+B^N G p`.
-- **All-periodic BCs only** at this stage.  Wall/inflow/outflow is
-  deferred until after the algorithm validates.
+- **Physical BCs** (`src/INSSolver_BC.cpp`): per-face `periodic` /
+  `noslip` / `inflow` / `slip` / `outflow` from `ins.bc_<face>` +
+  `ins.vel_<face>`.  Dirichlet velocity ⇒ Neumann pressure; outflow
+  velocity ⇒ Dirichlet p=0.  `m_pressure_singular` (no outflow ⇒
+  pure Neumann/periodic) gates the mean-pinning in
+  `SolveModifiedPoisson` — do NOT subtract the mean when an outflow
+  is present.  AMReX FillPatch uses `PhysBCFunctNoOp` (good for
+  interior + C/F only); the staggered domain-boundary ghosts are
+  overwritten afterwards by `FillVelGhostPhys` / `FillPresGhostPhys`.
+  Inhomogeneous wall data is kept out of the Neumann series
+  (homogeneous there) and re-imposed by `EnforceVelDirichlet` on
+  `u*` and `u^{n+1}`.  Don't move BC handling into the generic
+  AMReX BC functor — the staggered normal/tangential split is the
+  reason it's explicit.
 
 ## Coding style
 
@@ -119,12 +131,17 @@ run).  CodeLLDB is auto-installed on first use.
 
 | File             | What it exercises                                          |
 | ---------------- | ---------------------------------------------------------- |
-| `inputs`         | Single-level smoke test (32³, periodic, Taylor–Green).    |
-| `inputs.tg_amr`  | 2-level AMR composite Poisson path + regrid + FillPatch.   |
+| `inputs`         | Single-level smoke test (32³, periodic, Taylor–Green).     |
+| `inputs.tg_amr`  | 2-level AMR per-level Perot path + regrid + FillPatch.     |
+| `inputs.lid`     | Lid-driven cavity — all-Dirichlet BCs, singular pressure.  |
+| `inputs.channel` | Inflow/outflow — non-singular pressure (outflow Dirichlet).|
 
-Expected behaviour after fix-up: `|div u|_∞ ~ 10⁻¹⁴` per step; MLMG in
-~8 iterations; monotonic energy decay.  Any drift from those numbers is
-a regression.
+Taylor–Green expectation: `|div u|_∞ ~ 10⁻¹¹` per step (CG-tolerance
+dominated), unpreconditioned CG ~40–80 iters at 32³, monotonic energy
+decay.  Any drift is a regression.  `inputs.lid` should develop a
+single primary vortex and approach steady state; `inputs.channel`
+should report "non-singular (outflow Dirichlet)" and relax the inlet
+toward Poiseuille.
 
 ## Conventions for changes
 

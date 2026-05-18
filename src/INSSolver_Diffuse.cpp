@@ -117,18 +117,20 @@ void INSSolver::ApplyBNFace(int lev, int dir, const MultiFab &src,
   if (N == 0)
     return;
 
-  // term holds (εL)^k src as we iterate
+  // term holds (εL)^k src as we iterate.  The iterated terms use
+  // *homogeneous* physical BCs — for the truncated Neumann series the
+  // inhomogeneous wall data is re-imposed on u* afterwards by
+  // EnforceVelDirichlet (standard treatment for low truncation order).
   MultiFab term(fba, dm, 1, 2);
   MultiFab::Copy(term, src, 0, 0, 1, std::min(src.nGrow(), 2));
-  // (src ghosts are caller's responsibility; copy then refresh just in case)
-  term.FillBoundary(geom[lev].periodicity());
+  FillVelGhostPhys(lev, dir, term, /*homogeneous=*/true);
 
   MultiFab Lterm(fba, dm, 1, 0);
   for (int k = 1; k <= N; ++k) {
     ApplyFaceLaplacian(lev, dir, term, Lterm);
     // term ← ε * Lterm
     MultiFab::LinComb(term, 0.0_rt, term, 0, eps, Lterm, 0, 0, 1, 0);
-    term.FillBoundary(geom[lev].periodicity());
+    FillVelGhostPhys(lev, dir, term, /*homogeneous=*/true);
     MultiFab::Add(dst, term, 0, 0, 1, 0);
   }
 }
@@ -158,9 +160,13 @@ void INSSolver::ApplyCNDiffusion(
 
     MultiFab::Saxpy(F, m_dt, *adv[d], 0, 0, 1, 0); // F += dt A^n
 
-    F.FillBoundary(geom[lev].periodicity());
+    FillVelGhostPhys(lev, d, F, /*homogeneous=*/false);
 
     // u* = B^N F
     ApplyBNFace(lev, d, F, *vstar[d]);
   }
+
+  // Re-impose the prescribed wall velocity on u* (the B^N series does
+  // not preserve inhomogeneous Dirichlet data exactly).
+  EnforceVelDirichlet(lev, vstar);
 }
