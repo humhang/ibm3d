@@ -15,6 +15,7 @@
 #include <AMReX_PlotFileUtil.H>
 #include <AMReX_Print.H>
 #include <AMReX_TagBox.H>
+#include <AMReX_VisMF.H>
 
 #include <algorithm>
 #include <cmath>
@@ -106,6 +107,49 @@ void INSSolver::Run() {
   Print() << "Done. t = " << m_cur_time << ", step = " << m_step - 1 << "\n";
   if (m_plot_int > 0 && ((m_step - 1) % m_plot_int != 0))
     WritePlotFile();
+
+  if (m_ic == "tg2d") {
+    Real l2 = 0.0, linf = 0.0;
+    ComputeTG2DError(m_cur_time, l2, linf);
+    const Real *dx0 = geom[0].CellSize();
+    Print() << "TG2D-ERROR  ncell=" << geom[0].Domain().length(0)
+            << "  dx=" << dx0[0] << "  dt=" << m_dt << "  t=" << m_cur_time
+            << "  L2=" << l2 << "  Linf=" << linf << "\n";
+
+    // Fixed-grid self-convergence support: dump / compare the final
+    // level-0 cell-centred (u,v) so a dt-sweep can measure the
+    // temporal order with the (identical) spatial error cancelled.
+    ParmParse pp("ins");
+    std::string dumpf, cmpf;
+    pp.query("tg2d_dump", dumpf);
+    pp.query("tg2d_cmp", cmpf);
+    if (!dumpf.empty() || !cmpf.empty()) {
+      MultiFab cc(grids[0], dmap[0], 2, 0);
+      for (MFIter mfi(cc, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+        const Box &bx = mfi.tilebox();
+        auto const &c = cc.array(mfi);
+        auto const &u = m_vel[0][0]->const_array(mfi);
+        auto const &v = m_vel[0][1]->const_array(mfi);
+        amrex::ParallelFor(
+            bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+              c(i, j, k, 0) = 0.5_rt * (u(i, j, k) + u(i + 1, j, k));
+              c(i, j, k, 1) = 0.5_rt * (v(i, j, k) + v(i, j + 1, k));
+            });
+      }
+      if (!cmpf.empty()) {
+        MultiFab ref(grids[0], dmap[0], 2, 0);
+        VisMF::Read(ref, cmpf);
+        MultiFab diff(grids[0], dmap[0], 2, 0);
+        MultiFab::LinComb(diff, 1.0_rt, cc, 0, -1.0_rt, ref, 0, 0, 2, 0);
+        const Real d2 = MultiFab::Dot(diff, 0, diff, 0, 2, 0);
+        const Real n = static_cast<Real>(2 * grids[0].numPts());
+        Print() << "TG2D-SELFCONV  dt=" << m_dt << "  vs " << cmpf
+                << "  L2diff=" << std::sqrt(d2 / n) << "\n";
+      }
+      if (!dumpf.empty())
+        VisMF::Write(cc, dumpf);
+    }
+  }
 }
 
 // ============================================================
@@ -281,6 +325,57 @@ void INSSolver::InitFlowField(int lev) {
     m_pressure[lev]->setVal(0.0);
     for (int d = 0; d < AMREX_SPACEDIM; ++d)
       FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
+    FillPresGhostPhys(lev, *m_pressure[lev]);
+    return;
+  }
+
+  if (m_ic == "tg2d") {
+    // 2D Taylor–Green decaying vortex — an EXACT solution of
+    // incompressible NS (z-invariant; stays 2D in a periodic-z box):
+    //   u = -cos x sin y · e^{-2νt},  v = sin x cos y · e^{-2νt}
+    //   p = -¼(cos 2x + cos 2y) · e^{-4νt}
+    // Used for analytic spatial/temporal convergence verification.
+    for (MFIter mfi(*m_pressure[lev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+      auto const &p = m_pressure[lev]->array(mfi);
+      auto const &u = m_vel[lev][0]->array(mfi);
+      auto const &v = m_vel[lev][1]->array(mfi);
+#if AMREX_SPACEDIM == 3
+      auto const &w = m_vel[lev][2]->array(mfi);
+#endif
+      const Box &bx_cc = mfi.tilebox();
+      amrex::ParallelFor(bx_cc,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           const Real x = plo[0] + (i + 0.5_rt) * dx[0];
+                           const Real y = plo[1] + (j + 0.5_rt) * dx[1];
+                           p(i, j, k) = -0.25_rt * (std::cos(2.0_rt * x) +
+                                                    std::cos(2.0_rt * y));
+                         });
+      const Box &bx_u = mfi.tilebox(IntVect::TheDimensionVector(0));
+      amrex::ParallelFor(bx_u,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           const Real x = plo[0] + i * dx[0];
+                           const Real y = plo[1] + (j + 0.5_rt) * dx[1];
+                           u(i, j, k) = -std::cos(x) * std::sin(y);
+                         });
+      const Box &bx_v = mfi.tilebox(IntVect::TheDimensionVector(1));
+      amrex::ParallelFor(bx_v,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           const Real x = plo[0] + (i + 0.5_rt) * dx[0];
+                           const Real y = plo[1] + j * dx[1];
+                           v(i, j, k) = std::sin(x) * std::cos(y);
+                         });
+#if AMREX_SPACEDIM == 3
+      const Box &bx_w = mfi.tilebox(IntVect::TheDimensionVector(2));
+      amrex::ParallelFor(
+          bx_w, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+            w(i, j, k) = 0.0_rt;
+          });
+#endif
+    }
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      m_vel[lev][d]->OverrideSync(geom[lev].periodicity());
+      FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
+    }
     FillPresGhostPhys(lev, *m_pressure[lev]);
     return;
   }
@@ -679,4 +774,50 @@ Real INSSolver::ComputeMaxDivergence() const {
   }
   ParallelDescriptor::ReduceRealMax(m);
   return m;
+}
+
+// ============================================================
+// ComputeTG2DError — discrete error vs the exact 2D Taylor–Green
+//   u = -cos x sin y · F,  v = sin x cos y · F,   F = e^{-2νt}
+// (level 0; periodic verification case only)
+// ============================================================
+void INSSolver::ComputeTG2DError(Real time, Real &l2, Real &linf) const {
+  const int lev = 0;
+  const Real *dx = geom[lev].CellSize();
+  const Real *plo = geom[lev].ProbLo();
+  const Real F = std::exp(-2.0 * m_nu * time);
+
+  Real sum2 = 0.0, mx = 0.0;
+  long npts = 0;
+
+  for (int comp = 0; comp < 2; ++comp) {
+    const MultiFab &vel = *m_vel[lev][comp];
+    for (MFIter mfi(vel); mfi.isValid(); ++mfi) {
+      const Box &bx = mfi.validbox();
+      auto const &a = vel.const_array(mfi);
+      // exact face value at this component's nodal location
+      amrex::LoopOnCpu(bx, [&](int i, int j, int k) {
+        Real x, y, ex;
+        if (comp == 0) { // u on x-faces
+          x = plo[0] + i * dx[0];
+          y = plo[1] + (j + 0.5) * dx[1];
+          ex = -std::cos(x) * std::sin(y) * F;
+        } else { // v on y-faces
+          x = plo[0] + (i + 0.5) * dx[0];
+          y = plo[1] + j * dx[1];
+          ex = std::sin(x) * std::cos(y) * F;
+        }
+        const Real e = a(i, j, k) - ex;
+        sum2 += e * e;
+        mx = std::max(mx, std::abs(e));
+        ++npts;
+      });
+    }
+  }
+  ParallelDescriptor::ReduceRealSum(sum2);
+  ParallelDescriptor::ReduceLongSum(npts);
+  ParallelDescriptor::ReduceRealMax(mx);
+
+  l2 = (npts > 0) ? std::sqrt(sum2 / static_cast<Real>(npts)) : 0.0;
+  linf = mx;
 }

@@ -1,0 +1,44 @@
+# ============================================================
+# inputs.tg2d — 2D Taylor-Green decaying vortex (analytic case)
+#
+# Exact solution of incompressible NS (Taylor & Green 1937):
+#   u = -cos x sin y e^{-2 nu t}
+#   v =  sin x cos y e^{-2 nu t}
+#   p = -1/4 (cos 2x + cos 2y) e^{-4 nu t}
+#
+# z-invariant -> stays 2D in a thin periodic-z box.  Used for the
+# spatial/temporal convergence study; prints a TG2D-ERROR line at
+# the end (L2 / Linf of the face velocities vs the exact solution).
+#
+# Override amr.n_cell and ins.fixed_dt on the command line for the
+# refinement sweeps.
+# ============================================================
+
+geometry.prob_lo     =  0.0  0.0  0.0
+geometry.prob_hi     =  6.283185307179586  6.283185307179586  0.7853981634
+geometry.is_periodic =  1  1  1
+
+amr.n_cell           =  32  32  4
+amr.max_level        =  0
+amr.blocking_factor  =  4
+amr.max_grid_size    =  64
+amr.v                =  0
+
+ins.bc_xlo = periodic
+ins.bc_xhi = periodic
+ins.bc_ylo = periodic
+ins.bc_yhi = periodic
+ins.bc_zlo = periodic
+ins.bc_zhi = periodic
+
+ins.ic               =  tg2d
+ins.nu               =  5.0e-2
+ins.cfl              =  0.4
+ins.fixed_dt         =  2.5e-4
+ins.t_stop           =  0.15
+ins.max_step         =  200000
+ins.plot_int         =  0
+ins.cn_order         =  1
+ins.poisson_tol      =  1.0e-12
+ins.poisson_max_iter =  2000
+ins.verbose          =  0

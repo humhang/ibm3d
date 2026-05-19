@@ -216,6 +216,12 @@ private:
   amrex::Real ComputeMaxVelocity() const;
   amrex::Real ComputeMaxDivergence() const;
 
+  /// Discrete L2 and L∞ error of the face velocities against the exact
+  /// 2D Taylor–Green decaying vortex at `time` (level 0 only — used
+  /// for the analytic convergence study; no-op unless ic == tg2d).
+  void ComputeTG2DError(amrex::Real time, amrex::Real &l2, amrex::Real &linf)
+      const;
+
   // Compatibility helper: subtract the (volume-weighted) mean of a
   // cell-centred MultiFab in place — needed for the singular periodic
   // pressure system.
