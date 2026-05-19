@@ -145,7 +145,17 @@ Decisions baked into the current solver, with rationale:
        `lincc_interp` computes slopes that read them → NaN for fine
        patches hugging a wall.  `&pc_interp` uses no slopes → immune.
        (Filling the *real* coarse MF's ghosts does NOT help — FillPatch
-       uses its own scratch.)
+       uses its own scratch.)  **This applies to THREE pressure
+       interpolation sites**, all must use `pc_interp`:
+       `FillCellPatch` (every step), AND the regrid hooks
+       `MakeNewLevelFromCoarse` (InterpFromCoarseLevel) and
+       `RemakeLevel` (FillPatchTwoLevels).  The regrid hooks were
+       missed in the first pass → the lid cavity ran fine until the
+       first regrid (step 10, `regrid_int=10`), then NaN'd in the
+       pressure near the no-slip wall.  Velocity interp uses
+       `face_linear_interp` which is slope-free → immune (leave it).
+       If you ever add another coarse→fine pressure interpolation,
+       use `pc_interp`.
 
     5. **Per-level operator is non-symmetric → use BiCGStab, not CG**.
        Once a fine patch has a C/F interface the staggered `B^N` plus

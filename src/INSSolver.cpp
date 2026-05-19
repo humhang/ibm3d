@@ -177,9 +177,13 @@ void INSSolver::MakeNewLevelFromCoarse(int lev, Real time, const BoxArray &ba,
                           ref_ratio[lev - 1], &face_linear_interp,
                           m_bc_vel[dir], 0);
   }
+  // pc_interp, not lincc_interp: conservative-linear's limited slopes
+  // read the coarse scratch's domain ghosts, which InterpFromCoarseLevel
+  // leaves uninitialised under PhysBCFunctNoOp → NaN pressure when a
+  // newly-refined patch hugs a no-slip wall (lid cavity, on regrid).
   InterpFromCoarseLevel(*m_pressure[lev], time, *m_pressure[lev - 1], 0, 0, 1,
                         geom[lev - 1], geom[lev], bc_func, 0, bc_func, 0,
-                        ref_ratio[lev - 1], &lincc_interp, m_bc_pres, 0);
+                        ref_ratio[lev - 1], &pc_interp, m_bc_pres, 0);
 }
 
 void INSSolver::RemakeLevel(int lev, Real time, const BoxArray &ba,
@@ -209,9 +213,11 @@ void INSSolver::RemakeLevel(int lev, Real time, const BoxArray &ba,
     Vector<MultiFab *> cmf{m_pressure[lev - 1].get()};
     Vector<MultiFab *> fmf{old_pres.get()};
     Vector<Real> ct{time}, ft{time};
+    // pc_interp (see MakeNewLevelFromCoarse): lincc_interp NaNs the
+    // pressure on regrid when a remade patch touches a no-slip wall.
     FillPatchTwoLevels(*m_pressure[lev], time, cmf, ct, fmf, ft, 0, 0, 1,
                        geom[lev - 1], geom[lev], bc_func, 0, bc_func, 0,
-                       ref_ratio[lev - 1], &lincc_interp, m_bc_pres, 0);
+                       ref_ratio[lev - 1], &pc_interp, m_bc_pres, 0);
   }
 }
 
