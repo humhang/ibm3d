@@ -69,6 +69,8 @@ void INSSolver::ReadParameters() {
   pp.query("ic", m_ic);
   pp.query("tg_uc", m_tg_uc);
   pp.query("tg_vc", m_tg_vc);
+  pp.query("tg2d_dump", m_tg2d_dump);
+  pp.query("tg2d_cmp", m_tg2d_cmp);
 }
 
 // ============================================================
@@ -111,48 +113,8 @@ void INSSolver::Run() {
   if (m_plot_int > 0 && ((m_step - 1) % m_plot_int != 0))
     WritePlotFile();
 
-  if (m_ic == "tg2d") {
-    Real l2 = 0.0, linf = 0.0;
-    ComputeTG2DError(m_cur_time, l2, linf);
-    const Real *dx0 = geom[0].CellSize();
-    Print() << "TG2D-ERROR  ncell=" << geom[0].Domain().length(0)
-            << "  dx=" << dx0[0] << "  dt=" << m_dt << "  t=" << m_cur_time
-            << "  L2=" << l2 << "  Linf=" << linf << "\n";
-
-    // Fixed-grid self-convergence support: dump / compare the final
-    // level-0 cell-centred (u,v) so a dt-sweep can measure the
-    // temporal order with the (identical) spatial error cancelled.
-    ParmParse pp("ins");
-    std::string dumpf, cmpf;
-    pp.query("tg2d_dump", dumpf);
-    pp.query("tg2d_cmp", cmpf);
-    if (!dumpf.empty() || !cmpf.empty()) {
-      MultiFab cc(grids[0], dmap[0], 2, 0);
-      for (MFIter mfi(cc, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-        const Box &bx = mfi.tilebox();
-        auto const &c = cc.array(mfi);
-        auto const &u = m_vel[0][0]->const_array(mfi);
-        auto const &v = m_vel[0][1]->const_array(mfi);
-        amrex::ParallelFor(
-            bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-              c(i, j, k, 0) = 0.5_rt * (u(i, j, k) + u(i + 1, j, k));
-              c(i, j, k, 1) = 0.5_rt * (v(i, j, k) + v(i, j + 1, k));
-            });
-      }
-      if (!cmpf.empty()) {
-        MultiFab ref(grids[0], dmap[0], 2, 0);
-        VisMF::Read(ref, cmpf);
-        MultiFab diff(grids[0], dmap[0], 2, 0);
-        MultiFab::LinComb(diff, 1.0_rt, cc, 0, -1.0_rt, ref, 0, 0, 2, 0);
-        const Real d2 = MultiFab::Dot(diff, 0, diff, 0, 2, 0);
-        const Real n = static_cast<Real>(2 * grids[0].numPts());
-        Print() << "TG2D-SELFCONV  dt=" << m_dt << "  vs " << cmpf
-                << "  L2diff=" << std::sqrt(d2 / n) << "\n";
-      }
-      if (!dumpf.empty())
-        VisMF::Write(cc, dumpf);
-    }
-  }
+  if (m_ic == "tg2d")
+    WriteTG2DDiagnostics();
 }
 
 // ============================================================
@@ -316,6 +278,14 @@ void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
   m_pressure[lev]->setVal(0.0);
 }
 
+void INSSolver::SyncFillICGhosts(int lev) {
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    m_vel[lev][d]->OverrideSync(geom[lev].periodicity());
+    FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
+  }
+  FillPresGhostPhys(lev, *m_pressure[lev]);
+}
+
 // ============================================================
 // InitFlowField — 3D Taylor–Green vortex (or 2D fallback)
 // ============================================================
@@ -330,9 +300,7 @@ void INSSolver::InitFlowField(int lev) {
     for (int d = 0; d < AMREX_SPACEDIM; ++d)
       m_vel[lev][d]->setVal(0.0);
     m_pressure[lev]->setVal(0.0);
-    for (int d = 0; d < AMREX_SPACEDIM; ++d)
-      FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
-    FillPresGhostPhys(lev, *m_pressure[lev]);
+    SyncFillICGhosts(lev);
     return;
   }
 
@@ -385,11 +353,7 @@ void INSSolver::InitFlowField(int lev) {
           });
 #endif
     }
-    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-      m_vel[lev][d]->OverrideSync(geom[lev].periodicity());
-      FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
-    }
-    FillPresGhostPhys(lev, *m_pressure[lev]);
+    SyncFillICGhosts(lev);
     return;
   }
 
@@ -448,13 +412,7 @@ void INSSolver::InitFlowField(int lev) {
 #endif
   }
 
-  // Ensure face values shared by neighbouring patches are consistent,
-  // then apply physical boundary conditions.
-  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-    m_vel[lev][d]->OverrideSync(geom[lev].periodicity());
-    FillVelGhostPhys(lev, d, *m_vel[lev][d], /*homogeneous=*/false);
-  }
-  FillPresGhostPhys(lev, *m_pressure[lev]);
+  SyncFillICGhosts(lev);
 }
 
 // ============================================================
@@ -486,33 +444,32 @@ void INSSolver::Advance() {
       vs_p[d] = m_vstar[lev][d].get();
     }
 
-    ComputeAdvection(lev, adv_p, u_n_p); // writes m_advect[lev] = A^n
+    ComputeAdvection(lev, adv_p, u_n_p); // A^n → m_advect[lev]
 
-    // 2nd-order Adams–Bashforth on the advection term:
-    //   A_eff = 3/2 A^n − 1/2 A^{n-1}     (Euler A^n on the first step
-    //   and the first step after a regrid — see m_ab2_valid).
-    std::array<MultiFab, AMREX_SPACEDIM> adv_eff;
+    // 2nd-order Adams–Bashforth advection 3/2 A^n − 1/2 A^{n-1},
+    // blended in place into m_advect_old (no per-step allocation).
+    // No valid history (step 1 / first step after a regrid) ⇒ Euler.
+    std::array<const MultiFab *, AMREX_SPACEDIM> adv_eff;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-      adv_eff[d].define(m_advect[lev][d]->boxArray(), dm, 1, 0);
       if (m_ab2_valid) {
-        MultiFab::LinComb(adv_eff[d], 1.5_rt, *m_advect[lev][d], 0, -0.5_rt,
-                          *m_advect_old[lev][d], 0, 0, 1, 0);
+        MultiFab::LinComb(*m_advect_old[lev][d], 1.5_rt, *m_advect[lev][d], 0,
+                          -0.5_rt, *m_advect_old[lev][d], 0, 0, 1, 0);
+        adv_eff[d] = m_advect_old[lev][d].get();
       } else {
-        MultiFab::Copy(adv_eff[d], *m_advect[lev][d], 0, 0, 1, 0);
+        adv_eff[d] = m_advect[lev][d].get();
       }
     }
 
-    ApplyCNDiffusion(lev, vs_p,
-                     {AMREX_D_DECL(&u_n[0], &u_n[1], &u_n[2])},
-                     {AMREX_D_DECL((const MultiFab *)&adv_eff[0],
-                                   (const MultiFab *)&adv_eff[1],
-                                   (const MultiFab *)&adv_eff[2])});
+    ApplyCNDiffusion(lev, vs_p, {AMREX_D_DECL(&u_n[0], &u_n[1], &u_n[2])},
+                     {AMREX_D_DECL(adv_eff[0], adv_eff[1], adv_eff[2])});
 
-    // Save A^n as next step's A^{n-1}.
+    // Promote A^n to next step's A^{n-1} by swapping the buffers
+    // (m_advect still holds A^n; m_advect_old holds the spent blend
+    // or stale history, which the next ComputeAdvection overwrites).
     for (int d = 0; d < AMREX_SPACEDIM; ++d)
-      MultiFab::Copy(*m_advect_old[lev][d], *m_advect[lev][d], 0, 0, 1, 0);
+      std::swap(m_advect[lev][d], m_advect_old[lev][d]);
   }
-  m_ab2_valid = true; // history is now available for the next step
+  m_ab2_valid = true;
 
   // ---- 2) Perot modified-Poisson solve + projection on every level ----
   ProjectPerot();
@@ -855,4 +812,43 @@ void INSSolver::ComputeTG2DError(Real time, Real &l2, Real &linf) const {
 
   l2 = (npts > 0) ? std::sqrt(sum2 / static_cast<Real>(npts)) : 0.0;
   linf = mx;
+}
+
+// ============================================================
+// WriteTG2DDiagnostics — analytic error + (optional) fixed-grid
+//   self-convergence dump/compare.  Called once after the time loop.
+// ============================================================
+void INSSolver::WriteTG2DDiagnostics() const {
+  Real l2 = 0.0, linf = 0.0;
+  ComputeTG2DError(m_cur_time, l2, linf);
+  Print() << "TG2D-ERROR  ncell=" << geom[0].Domain().length(0)
+          << "  dx=" << geom[0].CellSize()[0] << "  dt=" << m_dt
+          << "  t=" << m_cur_time << "  L2=" << l2 << "  Linf=" << linf
+          << "\n";
+
+  if (m_tg2d_dump.empty() && m_tg2d_cmp.empty())
+    return;
+
+  // Final level-0 cell-centred velocity; comparing two dt runs on the
+  // same grid cancels the (identical) spatial error, isolating the
+  // temporal order.
+  constexpr int nc = AMREX_SPACEDIM;
+  MultiFab cc(grids[0], dmap[0], nc, 0);
+  amrex::average_face_to_cellcenter(
+      cc, 0,
+      Array<const MultiFab *, AMREX_SPACEDIM>{AMREX_D_DECL(
+          m_vel[0][0].get(), m_vel[0][1].get(), m_vel[0][2].get())});
+
+  if (!m_tg2d_cmp.empty()) {
+    MultiFab ref(grids[0], dmap[0], nc, 0);
+    VisMF::Read(ref, m_tg2d_cmp);
+    MultiFab diff(grids[0], dmap[0], nc, 0);
+    MultiFab::LinComb(diff, 1.0_rt, cc, 0, -1.0_rt, ref, 0, 0, nc, 0);
+    const Real d2 = MultiFab::Dot(diff, 0, diff, 0, nc, 0);
+    const Real n = static_cast<Real>(nc * grids[0].numPts());
+    Print() << "TG2D-SELFCONV  dt=" << m_dt << "  vs " << m_tg2d_cmp
+            << "  L2diff=" << std::sqrt(d2 / n) << "\n";
+  }
+  if (!m_tg2d_dump.empty())
+    VisMF::Write(cc, m_tg2d_dump);
 }

@@ -110,6 +110,10 @@ private:
   std::string m_ic = "taylor_green";
   amrex::Real m_tg_uc = 0.0; ///< tg2d mean-flow advection velocity
   amrex::Real m_tg_vc = 0.0;
+  /// tg2d fixed-grid self-convergence: VisMF path to write the final
+  /// cell-centred velocity to / compare against (empty = disabled).
+  std::string m_tg2d_dump;
+  std::string m_tg2d_cmp;
 
   // ---------------- Boundary conditions ----------------
   // Indexed by direction (0=x, 1=y, 2=z); lo and hi domain faces.
@@ -152,6 +156,9 @@ private:
   void AllocateLevelStorage(int lev, const amrex::BoxArray &ba,
                             const amrex::DistributionMapping &dm);
   void InitFlowField(int lev);
+  /// After seeding an IC: sync shared face values across patches and
+  /// apply the physical-BC ghost fill (velocity + pressure).
+  void SyncFillICGhosts(int lev);
 
   // ---- Physical boundary conditions (staggered grid) ----
   /// Fill the domain-boundary ghost layer (and, for the normal
@@ -231,11 +238,17 @@ private:
   amrex::Real ComputeMaxVelocity() const;
   amrex::Real ComputeMaxDivergence() const;
 
-  /// Discrete L2 and L∞ error of the face velocities against the exact
-  /// 2D Taylor–Green decaying vortex at `time` (level 0 only — used
-  /// for the analytic convergence study; no-op unless ic == tg2d).
+  /// Discrete L2 and L∞ error of the level-0 face velocities against
+  /// the exact 2D Taylor–Green vortex at `time` (analytic
+  /// verification; the caller restricts this to the tg2d case).
   void ComputeTG2DError(amrex::Real time, amrex::Real &l2, amrex::Real &linf)
       const;
+
+  /// Print the tg2d analytic error and, if ins.tg2d_dump/tg2d_cmp are
+  /// set, write/compare the final level-0 cell-centred velocity for a
+  /// fixed-grid temporal self-convergence study.  Called once after
+  /// the time loop.
+  void WriteTG2DDiagnostics() const;
 
   // Compatibility helper: subtract the (volume-weighted) mean of a
   // cell-centred MultiFab in place — needed for the singular periodic
