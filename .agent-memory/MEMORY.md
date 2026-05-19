@@ -1,7 +1,7 @@
 - [User: CFD researcher building an AMR IBPM solver](user_cfd_ibpm.md) — Domain expert in incompressible NS and the Taira–Colonius immersed-boundary projection method; building this repo as the eventual host for that algorithm.
 - [Project: ibm3d goal and current status](project_ibm3d_goal.md) — Final target is the Taira–Colonius IBPM on an AMR mesh; the present codebase implements only the NS+AMR substrate, no IB yet.
 - [Project: algorithmic design decisions](project_algorithmic_decisions.md) — Perot 1997 fractional step (= Taira–Colonius minus IB), matrix-free BiCGStab on the modified Poisson `D B^N G`; lid-cavity AMR bug cascade + fixes. Replaced Chorin/MLMG on 2026-05-15.
-- [Project: solver verification](project_verification.md) — Verified 2nd-order space / 1st-order time vs the exact 2D Taylor–Green vortex; how to reproduce; why temporal is 1.
+- [Project: solver verification](project_verification.md) — Verified 2nd-order space AND time (AB2 + cn_order≥2) vs exact 2D Taylor–Green; stationary TG2D is blind to advection time order (projection kills it) — use the convecting vortex.
 - [Project: matrix-free Trilinos plan for the IB stage](project_ib_matrixfree_plan.md) — Composite Schur-complement applied via Tpetra::Operator + Belos CG, MLMG as the preconditioner; do NOT assemble the modified Poisson matrix.
 - [Project: code layout and current file roles](project_code_layout.md) — Per-file purpose summary; entry points; what's a kernel vs. orchestration.
 - [Reference: external dependency paths](reference_dep_paths.md) — AMReX and Trilinos install prefixes on this machine; CMake config-file locations.

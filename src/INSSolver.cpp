@@ -67,6 +67,8 @@ void INSSolver::ReadParameters() {
   pp.query("verbose", m_verbose);
   pp.query("plot_prefix", m_plot_prefix);
   pp.query("ic", m_ic);
+  pp.query("tg_uc", m_tg_uc);
+  pp.query("tg_vc", m_tg_vc);
 }
 
 // ============================================================
@@ -93,6 +95,7 @@ void INSSolver::Run() {
 
     if (m_regrid_int > 0 && max_level > 0 && (m_step % m_regrid_int == 0)) {
       regrid(0, m_cur_time);
+      m_ab2_valid = false; // grids changed → A^{n-1} no longer valid
     }
 
     if (m_plot_int > 0 && (m_step % m_plot_int == 0)) {
@@ -269,6 +272,7 @@ void INSSolver::ClearLevel(int lev) {
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
     m_vel[lev][d].reset();
     m_advect[lev][d].reset();
+    m_advect_old[lev][d].reset();
     m_vstar[lev][d].reset();
   }
   m_pressure[lev].reset();
@@ -292,6 +296,7 @@ void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
   if (static_cast<int>(m_vel.size()) < N) {
     m_vel.resize(N);
     m_advect.resize(N);
+    m_advect_old.resize(N);
     m_vstar.resize(N);
     m_pressure.resize(N);
   }
@@ -299,9 +304,11 @@ void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
     m_vel[lev][d] = std::make_unique<MultiFab>(face_ba[d], dm, 1, nghost_vel);
     m_advect[lev][d] = std::make_unique<MultiFab>(face_ba[d], dm, 1, 0);
+    m_advect_old[lev][d] = std::make_unique<MultiFab>(face_ba[d], dm, 1, 0);
     m_vstar[lev][d] = std::make_unique<MultiFab>(face_ba[d], dm, 1, nghost_vel);
     m_vel[lev][d]->setVal(0.0);
     m_advect[lev][d]->setVal(0.0);
+    m_advect_old[lev][d]->setVal(0.0);
     m_vstar[lev][d]->setVal(0.0);
   }
 
@@ -330,11 +337,17 @@ void INSSolver::InitFlowField(int lev) {
   }
 
   if (m_ic == "tg2d") {
-    // 2D Taylor–Green decaying vortex — an EXACT solution of
-    // incompressible NS (z-invariant; stays 2D in a periodic-z box):
-    //   u = -cos x sin y · e^{-2νt},  v = sin x cos y · e^{-2νt}
-    //   p = -¼(cos 2x + cos 2y) · e^{-4νt}
-    // Used for analytic spatial/temporal convergence verification.
+    // 2D Taylor–Green decaying vortex, optionally translated by a
+    // uniform mean flow (m_tg_uc, m_tg_vc) — an EXACT solution of
+    // incompressible NS (Galilean boost; z-invariant, periodic):
+    //   u = Uc − cos ξ sin η · e^{-2νt},  ξ = x − Uc t
+    //   v = Vc + sin ξ cos η · e^{-2νt},  η = y − Vc t
+    //   p = -¼(cos 2ξ + cos 2η) · e^{-4νt}
+    // Uc=Vc=0 → stationary vortex (advection is a pure gradient →
+    // projected out → probes only the diffusion time order = cn_order).
+    // Uc≠0 → convecting vortex: advection is rotational, so this
+    // probes the AB2 advection time order too.  (t=0 ⇒ ξ=x, η=y.)
+    const Real Uc = m_tg_uc, Vc = m_tg_vc;
     for (MFIter mfi(*m_pressure[lev], TilingIfNotGPU()); mfi.isValid(); ++mfi) {
       auto const &p = m_pressure[lev]->array(mfi);
       auto const &u = m_vel[lev][0]->array(mfi);
@@ -355,14 +368,14 @@ void INSSolver::InitFlowField(int lev) {
                          [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
                            const Real x = plo[0] + i * dx[0];
                            const Real y = plo[1] + (j + 0.5_rt) * dx[1];
-                           u(i, j, k) = -std::cos(x) * std::sin(y);
+                           u(i, j, k) = Uc - std::cos(x) * std::sin(y);
                          });
       const Box &bx_v = mfi.tilebox(IntVect::TheDimensionVector(1));
       amrex::ParallelFor(bx_v,
                          [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
                            const Real x = plo[0] + (i + 0.5_rt) * dx[0];
                            const Real y = plo[1] + j * dx[1];
-                           v(i, j, k) = std::sin(x) * std::cos(y);
+                           v(i, j, k) = Vc + std::sin(x) * std::cos(y);
                          });
 #if AMREX_SPACEDIM == 3
       const Box &bx_w = mfi.tilebox(IntVect::TheDimensionVector(2));
@@ -473,13 +486,33 @@ void INSSolver::Advance() {
       vs_p[d] = m_vstar[lev][d].get();
     }
 
-    ComputeAdvection(lev, adv_p, u_n_p);
+    ComputeAdvection(lev, adv_p, u_n_p); // writes m_advect[lev] = A^n
+
+    // 2nd-order Adams–Bashforth on the advection term:
+    //   A_eff = 3/2 A^n − 1/2 A^{n-1}     (Euler A^n on the first step
+    //   and the first step after a regrid — see m_ab2_valid).
+    std::array<MultiFab, AMREX_SPACEDIM> adv_eff;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      adv_eff[d].define(m_advect[lev][d]->boxArray(), dm, 1, 0);
+      if (m_ab2_valid) {
+        MultiFab::LinComb(adv_eff[d], 1.5_rt, *m_advect[lev][d], 0, -0.5_rt,
+                          *m_advect_old[lev][d], 0, 0, 1, 0);
+      } else {
+        MultiFab::Copy(adv_eff[d], *m_advect[lev][d], 0, 0, 1, 0);
+      }
+    }
+
     ApplyCNDiffusion(lev, vs_p,
                      {AMREX_D_DECL(&u_n[0], &u_n[1], &u_n[2])},
-                     {AMREX_D_DECL((const MultiFab *)m_advect[lev][0].get(),
-                                   (const MultiFab *)m_advect[lev][1].get(),
-                                   (const MultiFab *)m_advect[lev][2].get())});
+                     {AMREX_D_DECL((const MultiFab *)&adv_eff[0],
+                                   (const MultiFab *)&adv_eff[1],
+                                   (const MultiFab *)&adv_eff[2])});
+
+    // Save A^n as next step's A^{n-1}.
+    for (int d = 0; d < AMREX_SPACEDIM; ++d)
+      MultiFab::Copy(*m_advect_old[lev][d], *m_advect[lev][d], 0, 0, 1, 0);
   }
+  m_ab2_valid = true; // history is now available for the next step
 
   // ---- 2) Perot modified-Poisson solve + projection on every level ----
   ProjectPerot();
@@ -786,6 +819,7 @@ void INSSolver::ComputeTG2DError(Real time, Real &l2, Real &linf) const {
   const Real *dx = geom[lev].CellSize();
   const Real *plo = geom[lev].ProbLo();
   const Real F = std::exp(-2.0 * m_nu * time);
+  const Real Uc = m_tg_uc, Vc = m_tg_vc;
 
   Real sum2 = 0.0, mx = 0.0;
   long npts = 0;
@@ -795,17 +829,18 @@ void INSSolver::ComputeTG2DError(Real time, Real &l2, Real &linf) const {
     for (MFIter mfi(vel); mfi.isValid(); ++mfi) {
       const Box &bx = mfi.validbox();
       auto const &a = vel.const_array(mfi);
-      // exact face value at this component's nodal location
+      // exact face value at this component's nodal location;
+      // convecting frame ξ = x − Uc t, η = y − Vc t
       amrex::LoopOnCpu(bx, [&](int i, int j, int k) {
         Real x, y, ex;
         if (comp == 0) { // u on x-faces
           x = plo[0] + i * dx[0];
           y = plo[1] + (j + 0.5) * dx[1];
-          ex = -std::cos(x) * std::sin(y) * F;
+          ex = Uc - std::cos(x - Uc * time) * std::sin(y - Vc * time) * F;
         } else { // v on y-faces
           x = plo[0] + (i + 0.5) * dx[0];
           y = plo[1] + j * dx[1];
-          ex = std::sin(x) * std::cos(y) * F;
+          ex = Vc + std::sin(x - Uc * time) * std::cos(y - Vc * time) * F;
         }
         const Real e = a(i, j, k) - ex;
         sum2 += e * e;

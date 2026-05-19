@@ -94,13 +94,22 @@ private:
   int m_max_step = 10000;
   int m_plot_int = 100;
   int m_regrid_int = 5;
-  int m_cn_order = 1; ///< Neumann-series truncation order N (B^N = I+εL+…+(εL)^N)
+  /// Neumann-series truncation order N (B^N = I+εL+…+(εL)^N).  This
+  /// is ALSO the temporal order of the diffusion integration, so the
+  /// default is 2 to match the 2nd-order AB2 advection — the scheme
+  /// is only globally 2nd-order in time when N ≥ 2.
+  int m_cn_order = 2;
   amrex::Real m_refine_vort = 5.0;
   amrex::Real m_poisson_tol = 1.0e-10; ///< CG relative tolerance
   int m_poisson_max_iter = 500;
   int m_verbose = 1;
   std::string m_plot_prefix = "plt";
-  std::string m_ic = "taylor_green"; ///< "taylor_green" | "quiescent"
+  /// "taylor_green" (3D) | "quiescent" | "tg2d" (2D Taylor–Green;
+  /// optionally translated by (m_tg_uc, m_tg_vc) → convecting vortex,
+  /// which makes the advection rotational so AB2's time order shows).
+  std::string m_ic = "taylor_green";
+  amrex::Real m_tg_uc = 0.0; ///< tg2d mean-flow advection velocity
+  amrex::Real m_tg_vc = 0.0;
 
   // ---------------- Boundary conditions ----------------
   // Indexed by direction (0=x, 1=y, 2=z); lo and hi domain faces.
@@ -121,9 +130,15 @@ private:
   using FaceMFArray =
       std::array<std::unique_ptr<amrex::MultiFab>, AMREX_SPACEDIM>;
 
-  amrex::Vector<FaceMFArray> m_vel;    ///< current velocity (u, v, w)
-  amrex::Vector<FaceMFArray> m_advect; ///< explicit advection term A^n
-  amrex::Vector<FaceMFArray> m_vstar;  ///< intermediate u*
+  amrex::Vector<FaceMFArray> m_vel;        ///< current velocity (u, v, w)
+  amrex::Vector<FaceMFArray> m_advect;     ///< advection term A^n
+  amrex::Vector<FaceMFArray> m_advect_old; ///< A^{n-1} for AB2
+  amrex::Vector<FaceMFArray> m_vstar;      ///< intermediate u*
+  /// AB2 history valid? false on step 1 and the first step after a
+  /// regrid (grids changed → stored A^{n-1} no longer matches);
+  /// those steps fall back to explicit Euler (1st-order, one step,
+  /// O(dt²) — does not spoil global 2nd-order at fixed grid).
+  bool m_ab2_valid = false;
   amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_pressure;
 
   // ---------------- BC records ----------------

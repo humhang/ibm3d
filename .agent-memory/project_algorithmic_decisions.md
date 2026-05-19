@@ -177,3 +177,22 @@ Decisions baked into the current solver, with rationale:
     "simplify" away: the four `setVal(0)`/buffer choices, the
     `pc_interp`, the `level_singular` gate, and BiCGStab are all
     load-bearing.
+
+11. **AB2 advection + cn_order=2 default → 2nd-order in time**
+    (added 2026-05-19).  The advection term in the predictor is now
+    2nd-order Adams–Bashforth: `dt·(3/2 A^n − 1/2 A^{n-1})`
+    (`m_advect_old` stores A^{n-1}; `m_ab2_valid` falls back to Euler
+    on step 1 and the first step after a regrid — one O(dt²) step,
+    harmless at fixed grid).  Replaced explicit Euler `dt·A^n`.  The
+    diffusion time order equals the `B^N` truncation order N, so
+    `m_cn_order` default is now **2** (was 1) and every shipped
+    `inputs.*` sets `cn_order=2`; the scheme is globally 2nd-order in
+    time only with AB2 AND N≥2.  Verified by self-convergence on the
+    stationary TG2D (diffusion order, =N) and the convecting TG2D
+    (advection order, AB2) — both clean 2.00.  See
+    `project_verification.md` for the crucial subtlety that
+    stationary TG2D's advection is projected out (irrotational) and
+    cannot probe AB2 — use the convecting vortex (`tg_uc`,`tg_vc`).
+    Deferred: regridding `m_advect_old` through the regrid hooks (so
+    AB2 survives regrids without the Euler fallback) — only matters
+    for AMR runs that regrid very frequently.
