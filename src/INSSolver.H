@@ -60,8 +60,10 @@
 ///              boundary).  Pressure: homogeneous Neumann ∂p/∂n = 0.
 ///   slip       free-slip wall: normal velocity = 0, tangential
 ///              zero-gradient.  Pressure: homogeneous Neumann.
-///   outflow    velocity zero-gradient (Neumann).  Pressure:
-///              homogeneous Dirichlet p = 0.
+///   outflow    velocity linear extrapolation: ghost = 2u(N)−u(N−1),
+///              giving ∂²u/∂n² = 0 (biased diffusion stencil; normal
+///              boundary face left as-is, set by projection).
+///              Pressure: homogeneous Dirichlet p = 0.
 enum class BCKind { periodic, dirichlet, slip, outflow };
 
 class INSSolver : public amrex::AmrCore {

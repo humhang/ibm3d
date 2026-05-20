@@ -9,7 +9,10 @@
  *   dirichlet   prescribed velocity vector g  (no-slip wall, moving
  *               lid, inflow — same numerics).  Pressure: Neumann.
  *   slip        u·n = 0, tangential zero-gradient.  Pressure: Neumann.
- *   outflow     velocity zero-gradient.  Pressure: Dirichlet p = 0.
+ *   outflow     velocity linear extrapolation: ghost = 2u(N)−u(N−1), giving
+ *               ∂²u/∂n² = 0 at the boundary face (biased-stencil diffusion).
+ *               Normal boundary face is left as-is (set by projection).
+ *               Pressure: Dirichlet p = 0.
  *
  * Staggered-grid conventions used below
  * -------------------------------------
@@ -265,19 +268,30 @@ void INSSolver::FillVelGhostPhys(int lev, int comp, MultiFab &mf,
                     a(i, j, k) = wall;
                   } else {
                     const int off = (s == 0) ? (bidx - idx) : (idx - bidx);
-                    a(i, j, k) = 2.0 * wall - interior_normal(off);
+                    a(i, j, k) = 2.0_rt * wall - interior_normal(off);
                   }
-                } else { // outflow: zero gradient
-                  a(i, j, k) = interior_normal(1);
+                } else {
+                  // outflow: boundary face is set by the projection;
+                  // ghost cells get the linear extrapolation beyond it
+                  // so that L(u)[bidx] = 0 in the normal direction.
+                  if (idx != bidx) {
+                    const int off = (s == 0) ? (bidx - idx) : (idx - bidx);
+                    a(i, j, k) = (1.0_rt + off) * interior_normal(0) -
+                                 (Real)off * interior_normal(1);
+                  }
                 }
               } else {
                 // Tangential face: wall is between ghost(-1) and
                 // interior(0); value at the wall = average.
                 const int m = (s == 0) ? (dlo - idx) : (idx - dhi);
                 if (kd == BCKind::dirichlet) {
-                  a(i, j, k) = 2.0 * g - interior_tang(m - 1);
-                } else { // slip / outflow: zero gradient
+                  a(i, j, k) = 2.0_rt * g - interior_tang(m - 1);
+                } else if (kd == BCKind::slip) {
                   a(i, j, k) = interior_tang(m - 1);
+                } else {
+                  // outflow: linear extrapolation gives ∂²u/∂n² = 0
+                  a(i, j, k) = (1.0_rt + m) * interior_tang(0) -
+                               (Real)m * interior_tang(1);
                 }
               }
             });

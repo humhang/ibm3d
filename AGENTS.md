@@ -48,6 +48,11 @@ Key decisions already settled, do not re-litigate:
   raw `G p` term must retain outflow `p=0` Dirichlet boundary faces.
   Don't move BC handling into the generic AMReX BC functor — the
   staggered normal/tangential split is the reason it's explicit.
+  Outflow velocity ghost fill is **linear extrapolation**
+  (`ghost = 2u(N) − u(N−1)`) so that the face Laplacian at the
+  outflow boundary face is zero in the normal direction (`∂²u/∂n² = 0`
+  = biased diffusion stencil).  The normal boundary face itself is
+  left untouched by `FillVelGhostPhys`; the projection sets it.
 
 ## Coding style
 
