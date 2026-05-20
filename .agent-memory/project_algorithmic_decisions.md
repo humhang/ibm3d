@@ -1,6 +1,6 @@
 ---
 name: Project — algorithmic design decisions
-description: Records the numerical/algorithmic choices that aren't obvious from reading the code (why MLMG now, why truncated Neumann, what "approximate projection" looks like across AMR levels).
+description: Records the numerical/algorithmic choices that aren't obvious from reading the code (why matrix-free modified Poisson, why truncated Neumann, what "approximate projection" looks like across AMR levels).
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
@@ -17,29 +17,33 @@ Decisions baked into the current solver, with rationale:
 3. **Crank–Nicolson diffusion, inverted via truncated Neumann series**:
    `(I − εL)^{-1} ≈ Σ_{k=0}^{N} (εL)^k` with `ε = ν dt / 2` and `N = 2`
    by default.  Convergence requires `‖εL‖ < 1`, i.e. `ν dt / h² < 1/(2d)`.
-   Cheap, no inner solve, but **NOT** unconditionally stable — the
-   advective CFL is the constraint, and viscous stability is monitored
-   implicitly by the series truncation tail.  Increase `ins.cn_order` if
-   `ν dt / h²` is large.
+   Cheap, no inner solve, but **NOT** unconditionally stable — `ComputeDt`
+   enforces a diffusive cap so the Neumann series remains in its
+   convergence regime.  Increase `ins.cn_order` if `ν dt / h²` is large
+   but still inside that cap.
 
-4. **Pressure Poisson via AMReX MLMG composite solve**.  MLPoisson handles
-   C/F flux matching internally; we pass per-level RHS = `(1/dt) ∇·u*`
-   (after `average_down_faces` of `u*` so coarse face values at the C/F
-   interface equal the averaged fine flux) and per-level solution into
-   `m_phi[lev]`.  Periodic BCs are set via `setDomainBC(Periodic, …)`.
-   This will be replaced by a matrix-free Trilinos `Tpetra::Operator`
-   when the IB step lands (see `project_ib_matrixfree_plan.md`).
+4. **Modified Poisson is matrix-free, not MLMG**.  The pressure step
+   solves `(D B^N G) p = (1/dt) D u*` directly by composing
+   `ComputePressureGradient`, `ApplyBNFace`, and cell divergence.  We
+   still use AMReX `MultiFab`/FillPatch/average-down machinery, but
+   there is no current AMReX `MLMG` pressure solve and no `m_phi`
+   incremental pressure update.  This keeps the pure-NS substrate aligned
+   with the eventual Taira-Colonius IB saddle-point operator.
 
-5. **AMReX MLPoisson sign**: `Lφ = +∇²φ`.  So `solve(phi, rhs)` solves
-   `∇²φ = rhs`.  The RHS here is `+(1/dt) ∇·u*`, **not** negative.
-   See `reference_mlpoisson_sign.md` — this is verified against the
-   `mlpoisson_adotx` / `mlpoisson_gsrb` kernels in the installed
-   AMReX headers, contradicting some MLLinOp doc wording about a
-   `(αI − βL)` operator.
+5. **Modified-Poisson sign and Krylov choice**.  `D B^N G` is negative
+   semidefinite on full periodic/Neumann levels, so
+   `ApplyModifiedPoissonOp` returns `-D B^N G` and `ProjectPerot` builds
+   `rhs = -(1/dt) D u*`.  Full-domain levels then have the positive sign,
+   but partial AMR levels with C/F Dirichlet ghosts are nonsymmetric; the
+   current solver therefore uses matrix-free **BiCGStab**, not CG.  The
+   old AMReX `MLPoisson` sign note remains useful historical context in
+   `reference_mlpoisson_sign.md`, but MLMG is not in the active pressure
+   path.
 
 6. **Non-subcycled time stepping**.  Same `dt` on every AMR level, chosen
-   from the advective CFL on the finest level.  Less efficient than
-   subcycling but dramatically simpler — no per-level temporal
+   from an unsplit advective CFL across all levels and the finest-level
+   Neumann-series diffusive cap.  Less efficient than subcycling but
+   dramatically simpler — no per-level temporal
    interpolation of ghost data, no nested time loops.  IAMR-style
    subcycling can be retrofitted later if needed.
 
@@ -85,15 +89,13 @@ Decisions baked into the current solver, with rationale:
      velocity is re-imposed on `u*` and `u^{n+1}` by
      `EnforceVelDirichlet` after the predictor and the projection.
      Standard low-truncation-order treatment; O(εL·boundary) error.
-   - **Tested**: periodic Taylor–Green regression is bit-identical
-     after the BC layer (periodic short-circuits the boundary loop).
-     `inputs.lid` (cavity) and `inputs.channel` (in/outflow) were
-     written and code-reviewed but NOT run-verified in the
-     2026-05-15 session.
+   - **Tested**: periodic Taylor–Green regression is stable; `inputs.lid`
+     and `inputs.channel` have been run-verified.  The channel case is
+     the outflow-Dirichlet pressure check.
 
 10. **Per-level operator must zero its coarse–fine ghosts**
     (bug found + fixed 2026-05-18, `inputs.lid_amr`).  The per-level
-    modified-Poisson CG (`SolveModifiedPoisson` / `ApplyBNFace` /
+    modified-Poisson Krylov path (`SolveModifiedPoisson` / `ApplyBNFace` /
     `ApplyModifiedPoissonOp`) only fills ghosts via `FillBoundary` +
     domain physical BC.  It does **not** interpolate C/F ghosts from
     coarse.  When a fine patch has an *interior* C/F interface (as in
@@ -113,8 +115,8 @@ Decisions baked into the current solver, with rationale:
        old quiescent-IC fallback `dt = 0.25 h²/ν` gave `ε‖L‖ = 1.5`.
        Fix: cap dt every step at `dt_diff = α h²/(2·dim·ν)` with
        `α = 0.5` (so `ε‖L‖ ≤ 0.5`), using the *finest* level's h, and
-       take `min(dt_adv, dt_diff)`.  Periodic TG is CFL-limited so its
-       dt is unchanged (bit-identical regression preserved).
+       take `min(dt_adv, dt_diff)`.  `ins.fixed_dt` still must satisfy
+       this cap; it only bypasses the advective CFL.
 
     2. **C/F pressure must be Dirichlet-from-coarse, not 0**.  The
        per-level "Dirichlet-0 at C/F" idea (zeroing the fine pressure
@@ -196,3 +198,33 @@ Decisions baked into the current solver, with rationale:
     Deferred: regridding `m_advect_old` through the regrid hooks (so
     AB2 survives regrids without the Euler fallback) — only matters
     for AMR runs that regrid very frequently.
+
+12. **Pressure-gradient fields must retain outflow Dirichlet faces**
+    (bug found + fixed 2026-05-19).  `FillPresGhostPhys` correctly
+    applies outflow `p=0` by odd reflection, so `ComputePressureGradient`
+    produces a nonzero normal boundary gradient for a constant pressure
+    mode.  The bug was then calling `FillVelGhostPhys(...,
+    homogeneous=true)` on that freshly computed `G p` field before
+    `ApplyBNFace`; on a normal outflow component, the velocity outflow
+    rule overwrote the valid boundary face by zero-gradient extrapolation,
+    erasing the pressure Dirichlet pin and leaving constants in the
+    operator nullspace.  Fix: do **not** pre-fill pressure-gradient
+    fields with velocity BCs before `ApplyBNFace`.  `ApplyBNFace` copies
+    the raw valid `G p` into the `k=0` term first, then fills the
+    homogeneous velocity ghosts only for the iterated `k>=1`
+    Neumann-series work term.  This preserves the outflow pressure pin
+    while keeping the mobility operator's homogeneous velocity treatment.
+    Regression: run an outflow input with `ins.check_pressure_pin=1`.
+    It applies the real matrix-free operator to constant `p=1` on level
+    0 and aborts unless `|-D B^N G 1|_inf` is nonzero.
+
+13. **Advective CFL is unsplit and includes prescribed Dirichlet speeds**
+    (fixed 2026-05-19).  The old `ComputeDt` used `max_d |u_d|/dx_d`,
+    which underestimates the multidimensional CFL for diagonal flow, and
+    it missed moving-lid tangential speeds on the first step because those
+    live in ghost faces rather than valid face data.  The current bound is
+    `max(Σ_d max|u_d|/dx_d)` per level, additionally taking the maximum
+    over prescribed Dirichlet face velocity vectors from `ins.vel_*`.
+    This makes quiescent moving-wall and inflow starts choose a sensible
+    advective dt immediately; the diffusive `B^N` cap may still be the
+    active limit.

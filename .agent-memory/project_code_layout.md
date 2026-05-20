@@ -4,7 +4,7 @@ description: One-line purpose for every source file, so future agents don't have
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-`src/` layout (as of 2026-05-15, third iteration — Perot + physical BCs):
+`src/` layout (as of 2026-05-19 — Perot + physical BCs + BiCGStab):
 
 | File                     | Role                                                                                |
 |--------------------------|-------------------------------------------------------------------------------------|
@@ -13,8 +13,8 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 | `INSSolver.cpp`          | Constructor, ParmParse, time loop, AmrCore hooks, FillPatch helpers (call physical BC after AMReX FillPatch), average-down, plotfile, IC (Taylor–Green *or* quiescent for BC-driven flows). |
 | `INSSolver_BC.cpp`       | `ParseBCs`, `BuildBCRecs`, `FillVelGhostPhys` (Dirichlet/slip/outflow, normal vs tangential staggered handling, homogeneous flag), `FillPresGhostPhys` (Neumann walls / Dirichlet-0 outflow), `EnforceVelDirichlet`. |
 | `INSSolver_Advect.cpp`   | `ComputeAdvection(lev, adv, vel_in)` — face-by-face `-(u·∇)u`; `vel_in` already FillPatched + physical-BC filled. |
-| `INSSolver_Diffuse.cpp`  | `ApplyFaceLaplacian`, `ComputePressureGradient`, `ApplyBNFace` (B^N, homogeneous wall data), `ApplyCNDiffusion` (Perot predictor, then `EnforceVelDirichlet`). |
-| `INSSolver_Project.cpp`  | `ApplyModifiedPoissonOp` (−D B^N G), `SolveModifiedPoisson` (matrix-free CG, mean-pin gated by `m_pressure_singular`), `ProjectPerot` (per-level solve+project, `EnforceVelDirichlet`). |
+| `INSSolver_Diffuse.cpp`  | `ApplyFaceLaplacian`, `ComputePressureGradient`, `ApplyBNFace` (B^N, raw valid k=0 term plus homogeneous k>=1 work-term ghosts), `ApplyCNDiffusion` (Perot predictor, then `EnforceVelDirichlet`). |
+| `INSSolver_Project.cpp`  | `ApplyModifiedPoissonOp` (−D B^N G), `SolveModifiedPoisson` (matrix-free BiCGStab, mean-pin gated by `m_pressure_singular`), `ProjectPerot` (per-level solve+project, `EnforceVelDirichlet`). |
 | `CMakeLists.txt`         | Executable `ins_solver`, links MPI + AMReX (Trilinos not currently needed). |
 
 Top-level files:

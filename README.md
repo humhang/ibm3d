@@ -49,16 +49,24 @@ this reduces to plain Chorin; at `N = 1` it matches CN's `O(dt²)`.
 
 The pressure `p` is solved for directly each step.  No incremental
 form — `m_pressure` is the current pressure, and the previous step's
-value is used as the CG warm start.
+value is used as the Krylov warm start.
 
-The modified Poisson is solved matrix-free with a hand-rolled CG.
+The modified Poisson is solved matrix-free with BiCGStab.
 `D B^N G` is composed from existing pieces (`ComputePressureGradient`,
 the face Laplacian, the cell divergence).  Its spectrum is `−k² · …`
-so the code negates both the operator and the RHS before handing to
-CG — that's the same sign story you'd hit with any code that called
-Laplacian-as-operator without an internal sign flip (e.g. AMReX
-`MLPoisson`).  No preconditioner currently — for the test grids
-(32³–64³) unpreconditioned CG converges in ~40–80 iters.
+on a full periodic/Neumann level, so the code negates both the operator
+and the RHS before the Krylov solve.  Full-domain cases are effectively
+SPD after that sign flip; partial AMR levels with C/F Dirichlet ghosts
+are nonsymmetric, which is why the implementation uses BiCGStab.  No
+preconditioner currently.
+
+`ComputeDt` uses an unsplit advective CFL bound,
+`dt <= cfl / max(Σ_d |u_d|/dx_d)`, plus a diffusive cap required by the
+truncated Neumann series for `(I − εL)^{-1}`.  Prescribed Dirichlet wall
+and inflow velocities are included explicitly in the CFL estimate, so a
+moving lid is visible even before tangential wall speeds enter valid
+face data.  `ins.fixed_dt` bypasses the advective CFL but still aborts if
+it violates the `B^N` stability cap.
 
 ## AMR
 
@@ -69,14 +77,16 @@ Laplacian-as-operator without an internal sign flip (e.g. AMReX
   the C/F interface.
 - Ghost cells at intra-level patch boundaries: `FillBoundary` (via
   `FillPatchSingleLevel`).  Ghost cells at C/F boundaries: interpolation
-  from coarse (`face_linear_interp` for velocity, `lincc_interp` for
+  from coarse (`face_linear_interp` for velocity, `pc_interp` for
   pressure) via `FillPatchTwoLevels`.
 - Refinement is driven by `|ω|` (cell-centred vorticity magnitude)
   exceeding `ins.refine_vort`.
 - A **proper composite** `D B^N G` — with FillPatch of every
   intermediate face term and average_down between L applications — is
   a natural future refactor when AMR divergence tolerance matters.
-  Current 2-level test sees `|div u|_∞ ~ 10⁻¹¹`, at the CG tolerance.
+  Periodic 2-level Taylor–Green reaches the Krylov tolerance; nonperiodic
+  AMR with physical-boundary refinement can retain a bounded C/F
+  divergence defect until a composite projection is added.
 
 ## Boundary conditions
 
@@ -110,7 +120,12 @@ components are reflected about the wall value half a cell away.
 The truncated-Neumann-series operator applications use *homogeneous*
 wall data; the prescribed velocity is re-imposed on `u*` and
 `u^{n+1}` by `EnforceVelDirichlet` after the predictor and the
-projection (standard treatment for low truncation order).
+projection (standard treatment for low truncation order).  Pressure
+Dirichlet outflow data is retained in the raw `G p` term of `B^N G p`;
+only the higher-order Neumann-series work terms use homogeneous
+velocity ghosts.  Set `ins.check_pressure_pin = 1` on an outflow case
+to run a startup regression check that verifies a constant pressure
+field is not in the modified-Poisson nullspace.
 
 ## Build / run
 
@@ -145,9 +160,8 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 | `inputs.channel` | Plane channel, uniform inflow / zero-gradient outflow, Re_h = 50.   |
 
 The Taylor–Green cases decay monotonically from the analytical IC;
-at convergence `|div u|_∞ ~ 10⁻¹¹` per step (CG tolerance dominated),
-unpreconditioned CG ~40–80 iters at 32³, `|u|_∞` decays with the
-viscous rate.
+at convergence `|div u|_∞ ~ 10⁻¹¹` per step (Krylov tolerance
+dominated), and `|u|_∞` decays with the viscous rate.
 
 The lid-driven cavity should approach a steady recirculating vortex;
 the channel relaxes the uniform inlet toward the parabolic Poiseuille

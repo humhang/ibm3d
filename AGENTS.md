@@ -21,17 +21,17 @@ Key decisions already settled, do not re-litigate:
   `(D B^N G) p^{n+1} = (1/dt) D u*`, projection
   `u^{n+1} = u* − dt B^N G p^{n+1}`.  `m_pressure` is solved for
   directly each step — there is no incremental form.
-- **Modified-Poisson solve is matrix-free**, hand-rolled CG.  Operator
+- **Modified-Poisson solve is matrix-free**, hand-rolled BiCGStab.  Operator
   composed from existing `ComputePressureGradient`, face Laplacian,
   and cell divergence pieces.  When the IB phase lands, the IB rows
   attach to this same operator (Tpetra::Operator wrapper) — keeping
   the modified-Poisson direction was the *purpose* of this design.
 - **`D B^N G` is negative semidefinite** (eigenvalues `−k² · …`).
   Both the operator (`ApplyModifiedPoissonOp`) and the RHS in
-  `ProjectPerot` are negated so CG sees a PSD system.  This is the
-  same sign story as AMReX `MLPoisson` and bit us in this file's
-  earlier revision; the projection `u^{n+1} = u* − dt B^N G p` still
-  uses the natural `+B^N G p`.
+  `ProjectPerot` are negated so full-domain levels have the positive
+  sign.  Partial AMR levels with C/F Dirichlet ghosts are nonsymmetric,
+  so the solver uses BiCGStab.  The projection
+  `u^{n+1} = u* − dt B^N G p` still uses the natural `+B^N G p`.
 - **Physical BCs** (`src/INSSolver_BC.cpp`): per-face `periodic` /
   `noslip` / `inflow` / `slip` / `outflow` from `ins.bc_<face>` +
   `ins.vel_<face>`.  Dirichlet velocity ⇒ Neumann pressure; outflow
@@ -43,9 +43,11 @@ Key decisions already settled, do not re-litigate:
   overwritten afterwards by `FillVelGhostPhys` / `FillPresGhostPhys`.
   Inhomogeneous wall data is kept out of the Neumann series
   (homogeneous there) and re-imposed by `EnforceVelDirichlet` on
-  `u*` and `u^{n+1}`.  Don't move BC handling into the generic
-  AMReX BC functor — the staggered normal/tangential split is the
-  reason it's explicit.
+  `u*` and `u^{n+1}`.  Do not apply `FillVelGhostPhys` directly to a
+  freshly computed pressure-gradient field before `ApplyBNFace`: the
+  raw `G p` term must retain outflow `p=0` Dirichlet boundary faces.
+  Don't move BC handling into the generic AMReX BC functor — the
+  staggered normal/tangential split is the reason it's explicit.
 
 ## Coding style
 
@@ -75,23 +77,18 @@ Key decisions already settled, do not re-litigate:
   used in the predictor and in the modified-Poisson operator — this is
   Perot's exact-factorisation consistency.  Don't replace any of the
   three `B^N` applications with the identity "for speed."
+- `ComputeDt` uses the unsplit advective bound
+  `dt <= cfl / max(Σ_d |u_d|/dx_d)`, includes prescribed Dirichlet wall
+  and inflow speeds, and always enforces the `B^N` Neumann-series
+  stability cap.  `ins.fixed_dt` overrides the advective CFL only; it
+  must not bypass the `B^N` cap.
 
-## Setting up a fresh clone
+## Agent memory
 
-This repo ships its Claude Code per-project memory inside the working
-tree at `.agent-memory/`.  Claude Code itself reads/writes a path under
-`~/.claude/projects/<encoded-abs-path>/memory/` — the standard bootstrap
-makes that path a symlink into the repo:
-
-```sh
-./scripts/setup-agent-memory.sh
-```
-
-Run it once after cloning.  It's idempotent.  After that, every AI
-session has access to the project's accumulated context (architectural
-decisions, the matrix-free plan for the IB phase, install paths,
-sign-convention gotchas, etc.) — see `.agent-memory/MEMORY.md` for the
-index.
+In-repo at `.agent-memory/` (committed; see `MEMORY.md` there for the
+one-line index).  Claude Code auto-loads `CLAUDE.md` at the repo root,
+which `@`-imports the memory index, so there is no per-machine
+bootstrap to run.
 
 ## Build / run
 
@@ -136,9 +133,9 @@ run).  CodeLLDB is auto-installed on first use.
 | `inputs.lid`     | Lid-driven cavity — all-Dirichlet BCs, singular pressure.  |
 | `inputs.channel` | Inflow/outflow — non-singular pressure (outflow Dirichlet).|
 
-Taylor–Green expectation: `|div u|_∞ ~ 10⁻¹¹` per step (CG-tolerance
-dominated), unpreconditioned CG ~40–80 iters at 32³, monotonic energy
-decay.  Any drift is a regression.  `inputs.lid` should develop a
+Taylor–Green expectation: `|div u|_∞ ~ 10⁻¹¹` per step (Krylov-tolerance
+dominated), monotonic energy decay.  Any drift is a regression.
+`inputs.lid` should develop a
 single primary vortex and approach steady state; `inputs.channel`
 should report "non-singular (outflow Dirichlet)" and relax the inlet
 toward Poiseuille.

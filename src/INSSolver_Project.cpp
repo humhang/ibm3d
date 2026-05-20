@@ -10,9 +10,8 @@
  *
  * The operator D B^N G is applied matrix-free (compose existing
  * gradient, face-Laplacian, divergence pieces) and the system is
- * solved with a hand-rolled CG.  No preconditioner — for the test
- * grids (32³–64³) unpreconditioned CG converges in a few-dozen
- * iterations; MLMG-as-preconditioner can be added later if needed.
+ * solved with BiCGStab.  No preconditioner — MLMG-as-preconditioner
+ * can be added later if needed.
  *
  * Multi-level handling is approximate: each level's modified Poisson
  * is solved independently, and `average_down_faces` / `average_down`
@@ -27,17 +26,19 @@
 #include <AMReX_Print.H>
 
 #include <cmath>
+#include <limits>
 
 using namespace amrex;
 
 // ============================================================
 //  ApplyModifiedPoissonOp — result = −D B^N G φ   (cell → cell)
 //
-//  We return the negated operator so CG sees a positive
-//  semidefinite system: the natural D B^N G has eigenvalues −k²
-//  on every Fourier mode (same sign convention as ∇²).  The
-//  caller passes a negated RHS to compensate.  The projection
-//  step still uses B^N G p with its natural sign.
+//  We return the negated operator so the full-domain periodic/Neumann
+//  case has the standard positive sign.  C/F Dirichlet ghosts make the
+//  per-level AMR operator nonsymmetric, so SolveModifiedPoisson uses
+//  BiCGStab rather than CG.  The caller passes a negated RHS to
+//  compensate.  The projection step still uses B^N G p with its
+//  natural sign.
 //
 //  φ must have ≥ 1 ghost cell filled by the caller.
 // ============================================================
@@ -60,7 +61,6 @@ void INSSolver::ApplyModifiedPoissonOp(int lev, const MultiFab &phi,
     // patch has an interior C/F interface (e.g. the lid cavity).
     gphi.setVal(0.0);
     ComputePressureGradient(lev, d, phi, gphi);
-    FillVelGhostPhys(lev, d, gphi, /*homogeneous=*/true);
 
     ApplyBNFace(lev, d, gphi, bgphi[d]);
   }
@@ -106,7 +106,7 @@ void INSSolver::SubtractMean(int lev, MultiFab &mf) {
 }
 
 // ============================================================
-//  SolveModifiedPoisson — matrix-free CG on (D B^N G) p = rhs
+//  SolveModifiedPoisson — matrix-free BiCGStab on (D B^N G) p = rhs
 //
 //  p:   in = warm start, out = solution (cell-centred, ≥1 ghost)
 //  rhs: read-only cell-centred MF (0 ghosts is fine)
@@ -236,6 +236,38 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
 }
 
 // ============================================================
+//  CheckOutflowPressurePin — constant p must not be a null mode
+//                            when outflow p=0 is active.
+// ============================================================
+void INSSolver::CheckOutflowPressurePin() {
+  if (m_pressure_singular) {
+    if (m_verbose > 0)
+      Print() << "Pressure-pin check skipped: no outflow Dirichlet face\n";
+    return;
+  }
+
+  constexpr int lev = 0;
+  MultiFab phi(grids[lev], dmap[lev], 1, 1);
+  phi.setVal(1.0);
+  FillPresGhostPhys(lev, phi);
+
+  MultiFab Aphi(grids[lev], dmap[lev], 1, 0);
+  Aphi.setVal(0.0);
+  ApplyModifiedPoissonOp(lev, phi, Aphi);
+
+  Real norm = Aphi.norminf(0, 0);
+  ParallelDescriptor::ReduceRealMax(norm);
+  if (m_verbose > 0)
+    Print() << "Pressure-pin check: |-D B^N G 1|_inf = " << norm << "\n";
+
+  const Real threshold = 1024.0_rt * std::numeric_limits<Real>::epsilon();
+  if (!std::isfinite(norm) || norm <= threshold) {
+    amrex::Abort("Pressure-pin check failed: outflow Dirichlet pressure "
+                 "left the constant mode in the operator nullspace.");
+  }
+}
+
+// ============================================================
 //  ProjectPerot — orchestrate the per-level Perot projection.
 // ============================================================
 void INSSolver::ProjectPerot() {
@@ -300,8 +332,8 @@ void INSSolver::ProjectPerot() {
       MultiFab gp(fba, dm, 1, 2);
       MultiFab bgp(fba, dm, 1, 0);
 
+      gp.setVal(0.0);
       ComputePressureGradient(lev, d, phi_g, gp);
-      FillVelGhostPhys(lev, d, gp, /*homogeneous=*/true);
 
       ApplyBNFace(lev, d, gp, bgp);
 

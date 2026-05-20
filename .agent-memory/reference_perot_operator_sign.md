@@ -1,6 +1,6 @@
 ---
 name: Reference — sign convention of the Perot modified-Poisson operator
-description: `D B^N G` is negative semidefinite (like ∇²); the code negates it so CG sees a PSD system. Bit me on the Perot rewrite; document for future bites.
+description: `D B^N G` is negative semidefinite (like ∇²); the code negates it before the Krylov solve. Bit me on the Perot rewrite; document for future bites.
 type: reference
 ---
 
@@ -15,7 +15,7 @@ where `K_h² > 0` is the discrete `D G` eigenvalue and the bracket
 is positive for small `ε K²` (which is enforced anyway by the
 Neumann-series convergence requirement).  Null space: constants.
 
-Unpreconditioned CG requires a positive semidefinite operator: it
+Unpreconditioned CG would require a positive semidefinite operator: it
 takes `α = (r,r)/(d, A d)`, and `(d, A d) ≤ 0` for our `A = D B^N G`
 makes the search direction step in the wrong direction.
 
@@ -29,13 +29,14 @@ natural positive sign on `B^N G p`.  Only the *solve* uses the
 negated operator+RHS pair.
 
 This is the same sign story as AMReX `MLPoisson` (see
-`reference_mlpoisson_sign.md`); MLMG hides it from the user by
-flipping internally before its smoother.  We don't have that luxury
-with a hand-rolled CG.
+`reference_mlpoisson_sign.md`), but the current code path is
+matrix-free.  Full-domain levels have the positive sign after the flip;
+partial AMR levels with C/F Dirichlet ghosts are nonsymmetric, so the
+active solver is BiCGStab rather than CG.
 
-**How to apply**: if you ever see `(d, A d) ≤ 0` warnings or CG
-diverging immediately on a self-adjoint operator related to ∇²,
+**How to apply**: if you ever see sign-sensitive Krylov failures on an
+operator related to ∇²,
 check the sign convention first.  The two convention pairs are
 *(negative operator, positive RHS)* — fine for direct methods, broken
-for CG — and *(negative operator, negative RHS)* — recovers a PSD
-system that CG handles cleanly.
+for CG — and *(negative operator, negative RHS)* — recovers the
+positive-sign pressure equation used by the current Krylov solve.

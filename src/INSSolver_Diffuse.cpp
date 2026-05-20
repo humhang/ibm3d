@@ -99,10 +99,11 @@ void INSSolver::ComputePressureGradient(int lev, int dir, const MultiFab &p,
 //      term ← ε L term
 //      dst  ← dst + term
 //
-//  Caller must ensure `src` has its 2-ghost layer filled.  After each
-//  L application we FillBoundary(periodicity) so the next L sees valid
-//  surroundings — single-level only; multi-level intermediate terms
-//  use FillBoundary as an approximation (see header).
+//  Only valid values are copied from `src`.  The iterated k>=1 work
+//  term fills homogeneous physical/intra-level ghosts before each L.
+//  This preserves pressure-gradient boundary faces in the k=0 term
+//  while keeping the Neumann-series terms tied to the homogeneous
+//  velocity operator.
 // ============================================================
 void INSSolver::ApplyBNFace(int lev, int dir, const MultiFab &src,
                             MultiFab &dst) {

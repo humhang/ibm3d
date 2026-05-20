@@ -28,7 +28,7 @@
 ///   1.  A^n  = -(u^n · ∇) u^n                          (explicit, centred)
 ///   2.  r1   = (I + εL) u^n + dt A^n                   (NO pressure gradient — Perot)
 ///   3.  u*   = B^N r1                                   (predictor)
-///   4.  Solve  (D B^N G) p^{n+1} = (1/dt) D u*          (modified Poisson, matrix-free CG)
+///   4.  Solve  (D B^N G) p^{n+1} = (1/dt) D u*          (modified Poisson, matrix-free Krylov)
 ///   5.  u^{n+1} = u* − dt B^N G p^{n+1}                  (Perot projection)
 ///   6.  Average u^{n+1} and p^{n+1} fine→coarse on overlapping faces / cells.
 ///
@@ -43,7 +43,7 @@
 ///   * The projection multiplies by B^N as well — it is `u* − dt B^N G p`,
 ///     not `u* − dt G p`.
 ///   * `m_pressure` is solved for directly, not accumulated.  Use the
-///     previous step's value as the CG warm start.
+///     previous step's value as the Krylov warm start.
 ///
 /// Coarse–fine treatment (current, approximate)
 /// --------------------------------------------
@@ -89,7 +89,7 @@ private:
   // ---------------- Parameters (ParmParse) ----------------
   amrex::Real m_nu = 1.0e-3;     ///< kinematic viscosity
   amrex::Real m_cfl = 0.5;       ///< advective CFL
-  amrex::Real m_fixed_dt = -1.0; ///< if > 0, override CFL-derived dt
+  amrex::Real m_fixed_dt = -1.0; ///< if > 0, override CFL dt, not B^N stability
   amrex::Real m_t_stop = 1.0;
   int m_max_step = 10000;
   int m_plot_int = 100;
@@ -100,8 +100,9 @@ private:
   /// is only globally 2nd-order in time when N ≥ 2.
   int m_cn_order = 2;
   amrex::Real m_refine_vort = 5.0;
-  amrex::Real m_poisson_tol = 1.0e-10; ///< CG relative tolerance
+  amrex::Real m_poisson_tol = 1.0e-10; ///< Krylov relative tolerance
   int m_poisson_max_iter = 500;
+  bool m_check_pressure_pin = false;
   int m_verbose = 1;
   std::string m_plot_prefix = "plt";
   /// "taylor_green" (3D) | "quiescent" | "tg2d" (2D Taylor–Green;
@@ -163,7 +164,7 @@ private:
   // ---- Physical boundary conditions (staggered grid) ----
   /// Fill the domain-boundary ghost layer (and, for the normal
   /// component, the boundary face itself) of velocity component
-  /// `comp`.  `homogeneous` uses zero wall data (for CG operator
+  /// `comp`.  `homogeneous` uses zero wall data (for linear-operator
   /// applications); otherwise the prescribed `ins.vel_*` values.
   /// Also calls FillBoundary for periodic / intra-level halos.
   void FillVelGhostPhys(int lev, int comp, amrex::MultiFab &mf,
@@ -197,8 +198,8 @@ private:
   void ComputePressureGradient(int lev, int dir, const amrex::MultiFab &p,
                                amrex::MultiFab &gp);
 
-  /// Apply B^N = Σ_{k=0}^N (εL)^k to a face-centred MultiFab.
-  /// `src` must have ≥2 ghost cells already filled (FillBoundary/FillPatch).
+  /// Apply B^N = Σ_{k=0}^N (εL)^k to valid faces of a face-centred MultiFab.
+  /// The k>=1 work term fills its own homogeneous ghosts before each L.
   void ApplyBNFace(int lev, int dir, const amrex::MultiFab &src,
                    amrex::MultiFab &dst);
 
@@ -207,11 +208,15 @@ private:
   void ApplyModifiedPoissonOp(int lev, const amrex::MultiFab &phi,
                               amrex::MultiFab &result);
 
-  /// Matrix-free CG on (D B^N G) p = rhs.
+  /// Matrix-free BiCGStab on (D B^N G) p = rhs.
   /// `p` is in/out — pass the previous-step pressure as the warm start.
   /// `rhs` is read-only.  Returns the iteration count.
   int SolveModifiedPoisson(int lev, amrex::MultiFab &p,
                            const amrex::MultiFab &rhs);
+
+  /// Optional regression check: outflow Dirichlet pressure must remove
+  /// the constant-pressure null mode.
+  void CheckOutflowPressurePin();
 
   /// Perot projection across all levels: per-level modified-Poisson solve,
   /// per-level u^{n+1} = u* − dt B^N G p, then fine→coarse sync.

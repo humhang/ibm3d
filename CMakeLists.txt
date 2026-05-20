@@ -36,8 +36,9 @@ message(STATUS "AMReX_OMP:           ${AMReX_OMP}")
 message(STATUS "AMReX_GPU_BACKEND:   ${AMReX_GPU_BACKEND}")
 
 # Trilinos will be re-introduced when the immersed-boundary projection is added
-# (it is needed for the Taira–Colonius saddle-point operator).  For the
-# pure NS+AMR phase we only use AMReX's MLMG composite Poisson solver.
+# (it is needed for the Taira–Colonius saddle-point operator).  The pure
+# NS+AMR phase currently uses AMReX data structures plus a matrix-free
+# modified-Poisson Krylov solve.
 
 if(AMReX_GPU_BACKEND STREQUAL "CUDA")
     enable_language(CUDA)

@@ -40,6 +40,9 @@ INSSolver::INSSolver() {
   AverageDownVelocity(m_vel);
   AverageDownPressure();
 
+  if (m_check_pressure_pin)
+    CheckOutflowPressurePin();
+
   Print() << "INSSolver constructed\n"
           << "  nu          = " << m_nu << "\n"
           << "  cfl         = " << m_cfl << "\n"
@@ -64,6 +67,7 @@ void INSSolver::ReadParameters() {
   pp.query("refine_vort", m_refine_vort);
   pp.query("poisson_tol", m_poisson_tol);
   pp.query("poisson_max_iter", m_poisson_max_iter);
+  pp.query("check_pressure_pin", m_check_pressure_pin);
   pp.query("verbose", m_verbose);
   pp.query("plot_prefix", m_plot_prefix);
   pp.query("ic", m_ic);
@@ -118,21 +122,35 @@ void INSSolver::Run() {
 }
 
 // ============================================================
-// ComputeDt — CFL on advective velocity across all levels
+// ComputeDt — advective CFL plus Neumann-series stability cap
 // ============================================================
 void INSSolver::ComputeDt() {
-  if (m_fixed_dt > 0.0) {
-    m_dt = m_fixed_dt;
-    return;
-  }
-
   // ---- Advective CFL (∞ when the field is at rest) ----
+  // Use the multidimensional unsplit bound Σ |u_d|/dx_d.  Prescribed
+  // Dirichlet velocities are included explicitly because moving-wall
+  // tangential speeds live in ghost faces and can be invisible to
+  // norminf(valid) on the first step.
   Real max_inv = 0.0;
   for (int lev = 0; lev <= finest_level; ++lev) {
     const Real *dx = geom[lev].CellSize();
+    Real lev_inv = 0.0;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
       Real umax = m_vel[lev][d]->norminf(0, 0);
-      max_inv = std::max(max_inv, umax / dx[d]);
+      lev_inv += umax / dx[d];
+    }
+    max_inv = std::max(max_inv, lev_inv);
+
+    for (int bdir = 0; bdir < AMREX_SPACEDIM; ++bdir) {
+      const auto add_dirichlet_face = [&](BCKind kind, const RealVect &vel) {
+        if (kind != BCKind::dirichlet)
+          return;
+        Real face_inv = 0.0;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d)
+          face_inv += std::abs(vel[d]) / dx[d];
+        max_inv = std::max(max_inv, face_inv);
+      };
+      add_dirichlet_face(m_bc_lo[bdir], m_bcvel_lo[bdir]);
+      add_dirichlet_face(m_bc_hi[bdir], m_bcvel_hi[bdir]);
     }
   }
   ParallelDescriptor::ReduceRealMax(max_inv);
@@ -144,8 +162,8 @@ void INSSolver::ComputeDt() {
   // radius ε‖L‖ < 1.  ‖L‖ = 4·dim/h² (discrete Laplacian) and
   // ε = ν dt/2, so ε‖L‖ = 2·dim·ν·dt/h².  Cap dt so ε‖L‖ ≤ α with
   // α = 0.5 — beyond ε‖L‖ ≥ 1 the modified-Poisson operator D B^N G
-  // turns indefinite and the CG converges to garbage (lid cavity
-  // with the viscous-limited dt was hitting ε‖L‖ = 1.5).
+  // turns indefinite and the Krylov solve converges to garbage (lid
+  // cavity with the viscous-limited dt was hitting ε‖L‖ = 1.5).
   const Real alpha = 0.5;
   const Real *dxf = geom[finest_level].CellSize();
   Real h2 = dxf[0] * dxf[0];
@@ -154,11 +172,24 @@ void INSSolver::ComputeDt() {
   const Real dt_diff =
       alpha * h2 / (2.0 * AMREX_SPACEDIM * std::max(m_nu, 1.0e-12));
 
-  m_dt = std::min(dt_adv, dt_diff);
+  if (m_fixed_dt > 0.0) {
+    const Real slack =
+        1.0_rt + 1024.0_rt * std::numeric_limits<Real>::epsilon();
+    if (m_fixed_dt > slack * dt_diff) {
+      amrex::Abort("ins.fixed_dt violates the Neumann-series stability "
+                   "limit for B^N; reduce fixed_dt or increase grid spacing.");
+    }
+    m_dt = m_fixed_dt;
+  } else {
+    m_dt = std::min(dt_adv, dt_diff);
+  }
 
-  if (m_verbose > 1)
-    amrex::Print() << "  dt: adv=" << dt_adv << " diff=" << dt_diff
-                   << " -> " << m_dt << "\n";
+  if (m_verbose > 1) {
+    amrex::Print() << "  dt: adv=" << dt_adv << " diff=" << dt_diff;
+    if (m_fixed_dt > 0.0)
+      amrex::Print() << " fixed=" << m_fixed_dt;
+    amrex::Print() << " -> " << m_dt << "\n";
+  }
 }
 
 // ============================================================
