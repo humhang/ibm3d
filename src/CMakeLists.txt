@@ -5,6 +5,7 @@ set(SOURCES
         INSSolver_Advect.cpp
         INSSolver_Diffuse.cpp
         INSSolver_Project.cpp
+        IBGeometry.cpp
 )
 
 add_executable(ins_solver ${SOURCES})

@@ -15,6 +15,7 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 | `INSSolver_Advect.cpp`   | `ComputeAdvection(lev, adv, vel_in)` — face-by-face `-(u·∇)u`; `vel_in` already FillPatched + physical-BC filled. |
 | `INSSolver_Diffuse.cpp`  | `ApplyFaceLaplacian`, `ComputePressureGradient`, `ApplyBNFace` (B^N, raw valid k=0 term plus homogeneous k>=1 work-term ghosts), `ApplyCNDiffusion` (Perot predictor, then `EnforceVelDirichlet`). |
 | `INSSolver_Project.cpp`  | `ApplyModifiedPoissonOp` (−D B^N G), `SolveModifiedPoisson` (matrix-free BiCGStab, mean-pin gated by `m_pressure_singular`), `ProjectPerot` (per-level solve+project, `EnforceVelDirichlet`). |
+| `IBGeometry.H/.cpp`      | Dimension-selected host loaders for future IB geometry: 2D ASCII line-segment curves, 3D ASCII/binary STL triangle surfaces with exact coordinate de-duplication into indexed connectivity. |
 | `CMakeLists.txt`         | Executable `ins_solver`, links MPI + AMReX (Trilinos not currently needed). |
 
 Top-level files:

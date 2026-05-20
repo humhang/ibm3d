@@ -98,7 +98,7 @@ Per-domain-face, read from the input file:
 | `noslip`        | Dirichlet `u = ins.vel_<face>` | Neumann ∂p/∂n=0 |
 | `inflow`        | Dirichlet `u = ins.vel_<face>` | Neumann ∂p/∂n=0 |
 | `slip`          | `u·n = 0`, tangential ∂/∂n = 0 | Neumann ∂p/∂n=0 |
-| `outflow`       | zero-gradient ∂u/∂n = 0        | Dirichlet p = 0 |
+| `outflow`       | linear extrapolation ghost, ∂²u/∂n² = 0 | Dirichlet p = 0 |
 
 `<face>` ∈ {`xlo`,`xhi`,`ylo`,`yhi`,`zlo`,`zhi`}.  `noslip` and
 `inflow` are numerically identical (a prescribed velocity vector on
@@ -113,10 +113,11 @@ When no face is `outflow` the pressure system is singular (pure
 Neumann/periodic) and its mean is pinned; an `outflow` face makes it
 non-singular and the mean is left free.
 
-Staggered-grid specifics live in `src/INSSolver_BC.cpp`: the
-component normal to a wall sits exactly on the boundary face (set
-directly for Dirichlet, extrapolated for outflow); tangential
-components are reflected about the wall value half a cell away.
+Staggered-grid specifics live in `src/INSSolver_BC.cpp`: at
+Dirichlet/slip walls, the normal component sits exactly on the boundary
+face and tangential components are reflected about the wall value half a
+cell away.  At outflow, velocity ghosts use linear extrapolation while
+the normal boundary face is left for the projection.
 The truncated-Neumann-series operator applications use *homogeneous*
 wall data; the prescribed velocity is re-imposed on `u*` and
 `u^{n+1}` by `EnforceVelDirichlet` after the predictor and the
@@ -170,7 +171,8 @@ the pressure, so the mean is not removed).
 
 ## What's _not_ implemented yet
 
-- **Immersed boundary**.  The matrix structure changes to a saddle-point
+- **Immersed-boundary projection / forcing**.  Only host-side geometry
+  loading exists so far.  The matrix structure changes to a saddle-point
   system; see the `AGENTS.md` notes for the planned Trilinos /
   matrix-free path.  Trilinos has been temporarily removed from
   CMakeLists.txt and will return when this phase begins.
