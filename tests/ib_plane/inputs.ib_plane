@@ -1,0 +1,45 @@
+# ============================================================
+# inputs.ib_plane — single-level IB projection smoke test
+#
+# A small two-triangle stationary immersed surface in the 3D
+# Taylor-Green vortex.  This is a compact regression for the coupled
+# Taira-Colonius projection path:
+#
+#   [-D; E] B^N [G H] [p; f]
+#
+# Expected with ins.verbose=2:
+#   |E u - U_ib|_inf ~ 1e-10
+#   |div u|_inf      ~ 1e-11
+#
+# Run from the repository root:
+#   ./build-release/src/ins_solver tests/ib_plane/inputs.ib_plane
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  0.0                0.0                0.0
+geometry.prob_hi     =  6.283185307179586  6.283185307179586  6.283185307179586
+geometry.is_periodic =  1  1  1
+
+# ---- Grid ----
+amr.n_cell           =  32  32  32
+amr.max_level        =  0
+amr.blocking_factor  =  8
+amr.max_grid_size    =  32
+amr.v                =  1
+
+# ---- Solver ----
+ins.nu               =  1.0e-2
+ins.cfl              =  0.5
+ins.t_stop           =  5.0
+ins.max_step         =  1
+ins.plot_int         =  0
+ins.cn_order         =  2
+ins.poisson_tol      =  1.0e-10
+ins.poisson_max_iter =  1000
+ins.verbose          =  2
+ins.plot_prefix      =  plt_ib_plane
+
+# ---- Immersed boundary ----
+ib.geometry          =  tests/ib_plane/ib_plane.stl
+ib.velocity          =  0.0  0.0  0.0
+ib.refine_radius     =  4.0

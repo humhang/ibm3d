@@ -4,12 +4,13 @@ Guidelines for any agent (human or AI) contributing to **ibm3d**.
 
 ## Project status (read this first)
 
-`ibm3d` is in **phase 1**: pure incompressible Navier–Stokes on an AMR
-hierarchy.  The end goal is the **Taira–Colonius immersed-boundary
-projection method** (JCP 2007); that machinery has *not* been added
-yet, and the linear-algebra direction for it is settled (matrix-free
-`Tpetra::Operator` with AMReX `MLMG` as the preconditioner — see
-below).  Do not add IB code without explicit user direction.
+`ibm3d` is in the first **immersed-boundary projection** phase.  The
+pure incompressible Navier–Stokes substrate is working, and the initial
+Taira–Colonius IB path now loads geometry, builds element-centroid
+markers, and solves the coupled finest-level projection for prescribed
+IB velocity.  The longer-term linear-algebra direction is still
+matrix-free `Tpetra::Operator` with AMReX `MLMG` as the preconditioner;
+the current executable coupled path uses the local BiCGStab machinery.
 
 Key decisions already settled, do not re-litigate:
 
@@ -23,9 +24,17 @@ Key decisions already settled, do not re-litigate:
   directly each step — there is no incremental form.
 - **Modified-Poisson solve is matrix-free**, hand-rolled BiCGStab.  Operator
   composed from existing `ComputePressureGradient`, face Laplacian,
-  and cell divergence pieces.  When the IB phase lands, the IB rows
-  attach to this same operator (Tpetra::Operator wrapper) — keeping
-  the modified-Poisson direction was the *purpose* of this design.
+  and cell divergence pieces.  The current IB rows attach to this same
+  operator as `[-D; E] B^N [G H]`; a Tpetra::Operator wrapper remains
+  the intended scalable linear-algebra interface.
+- **IB discretisation (current first pass)**: one Lagrangian marker at
+  each line-segment/triangle centroid, element length/area as the
+  quadrature weight, Peskin 4-point delta, component-wise MAC spreading
+  (`f_x` to x-faces, etc.), and owner-mask interpolation so shared patch
+  faces are not double-counted.  Geometry and force vectors are
+  replicated on every MPI rank.  IB coupling is applied only on the
+  finest level; `ErrorEst` tags a configurable neighborhood of the
+  markers so AMR keeps the body on the finest mesh.
 - **`D B^N G` is negative semidefinite** (eigenvalues `−k² · …`).
   Both the operator (`ApplyModifiedPoissonOp`) and the RHS in
   `ProjectPerot` are negated so full-domain levels have the positive
@@ -106,12 +115,13 @@ From the command palette: **`task: spawn`** → pick:
 | `Clean: Debug build` / Release           | `cmake --build … --target clean`                    |
 | `Clean: Rebuild Debug` / Release         | Wipe build tree, reconfigure, rebuild               |
 | `Clean: Wipe everything`                 | Remove both build trees and `compile_commands.json` |
-| `Run: ins_solver …`                      | Serial run with `inputs`                            |
-| `Run: ins_solver MPI (…, 4 ranks)`       | `mpirun -np 4` run with `inputs`                    |
+| `Run: ins_solver …`                      | Serial run with a selected `tests/<case>/inputs.*`  |
+| `Run: ins_solver MPI (…, 4 ranks)`       | `mpirun -np 4` run with a selected test input       |
 
 The configure tasks pass `-DAMReX_DIR=/Users/hang/opt/amrex-26.01/install/lib/cmake/AMReX`.
-Trilinos is **not** currently a dependency; when the IB phase starts,
-restore `find_package(Trilinos REQUIRED COMPONENTS Tpetra Belos Ifpack2
+Trilinos is **not** currently a dependency; when replacing the local
+coupled BiCGStab with the planned Tpetra/Belos operator path, restore
+`find_package(Trilinos REQUIRED COMPONENTS Tpetra Belos Ifpack2
 Teuchos)` in the top-level `CMakeLists.txt` and re-add
 `-DTrilinos_DIR=/Users/hang/opt/trilinos-17.0.0/install/lib/cmake/Trilinos`
 to the Zed configure tasks.
@@ -123,37 +133,43 @@ what `clangd` reads.
 ## Debugging
 
 `.zed/debug.json` defines two CodeLLDB configurations: launch
-`build-debug/src/ins_solver inputs` (with a pre-launch build), and
+`build-debug/src/ins_solver tests/tg/inputs.tg` (with a pre-launch build), and
 attach-by-PID (useful for attaching to one rank of an `mpirun`-launched
 run).  CodeLLDB is auto-installed on first use.
 
 ## Test inputs
 
-| File             | What it exercises                                          |
-| ---------------- | ---------------------------------------------------------- |
-| `inputs`         | Single-level smoke test (32³, periodic, Taylor–Green).     |
-| `inputs.tg_amr`  | 2-level AMR per-level Perot path + regrid + FillPatch.     |
-| `inputs.lid`     | Lid-driven cavity — all-Dirichlet BCs, singular pressure.  |
-| `inputs.channel` | Inflow/outflow — non-singular pressure (outflow Dirichlet).|
+| File                                      | What it exercises                                          |
+| ----------------------------------------- | ---------------------------------------------------------- |
+| `tests/tg/inputs.tg`                      | Single-level smoke test (32³, periodic, Taylor–Green).     |
+| `tests/tg_amr/inputs.tg_amr`              | 2-level AMR per-level Perot path + regrid + FillPatch.     |
+| `tests/tg2d/inputs.tg2d`                  | 2D analytic Taylor–Green verification.                     |
+| `tests/lid/inputs.lid`                    | Lid-driven cavity — all-Dirichlet BCs, singular pressure.  |
+| `tests/lid_amr/inputs.lid_amr`            | AMR lid-driven cavity.                                     |
+| `tests/channel/inputs.channel`            | Inflow/outflow — non-singular pressure (outflow Dirichlet).|
+| `tests/ib_plane/inputs.ib_plane`          | Single-level coupled IB projection smoke test.             |
+| `tests/ib_plane_amr/inputs.ib_plane_amr`  | Finest-level coupled IB projection with AMR tagging.       |
+| `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel flow past a stationary cylindrical IB surface. |
 
 Taylor–Green expectation: `|div u|_∞ ~ 10⁻¹¹` per step (Krylov-tolerance
 dominated), monotonic energy decay.  Any drift is a regression.
-`inputs.lid` should develop a
-single primary vortex and approach steady state; `inputs.channel`
+`tests/lid/inputs.lid` should develop a
+single primary vortex and approach steady state; `tests/channel/inputs.channel`
 should report "non-singular (outflow Dirichlet)" and relax the inlet
 toward Poiseuille.
 
 ## Conventions for changes
 
 - Keep new code in the existing file structure unless adding a
-  genuinely separate concern.  IB spread/interp would warrant a new
-  `INSSolver_IB.cpp`; a wall BC would extend the existing
+  genuinely separate concern.  Extend `INSSolver_IB.cpp` for IB
+  spread/interp/coupled-Schur work; a wall BC would extend the existing
   diffusion/projection files.
 - Do **not** comment what the code does — only why, and only when
   non-obvious.  AMReX domain knowledge is the bar: anything explainable
   by reading AMReX docs is too obvious to comment.
 - Don't introduce new third-party deps without discussion.  AMReX + MPI
-  is the current dependency surface; Trilinos returns when IB lands.
+  is the current dependency surface; Trilinos returns when the
+  Tpetra/Belos wrapper replaces the local coupled BiCGStab path.
 - Match the AMReX style of the surrounding code (`amrex::Real`,
   `amrex::Box`, `MFIter`, `ParallelFor`, etc.) rather than mixing in
   raw STL/MPI primitives.

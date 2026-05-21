@@ -3,11 +3,12 @@
 Staggered-grid (MAC) solver for the incompressible Navier–Stokes
 equations using the **Perot 1997 exact-factorisation fractional step**
 method ([J. Comput. Phys. 132(1)](https://doi.org/10.1006/jcph.1996.5587)),
-built on AMReX with multi-level support (`AmrCore`).  The intended end
-goal is the **Taira–Colonius immersed-boundary projection method**
+built on AMReX with multi-level support (`AmrCore`).  The solver now has
+an initial **Taira–Colonius immersed-boundary projection method**
 ([JCP 2007](https://doi.org/10.1016/j.jcp.2007.03.005)) — Perot 1997
-is its underlying fractional-step framework.  The current code
-implements the NS+AMR substrate; the IB block is not added yet.
+is its underlying fractional-step framework.  The current IB path handles
+prescribed IB velocity on loaded line/surface elements and applies the
+coupled projection on the finest AMR level.
 
 ## Equations
 
@@ -38,6 +39,20 @@ u*   = B^N r1                                                    (predictor)
 solve (D B^N G) p = (1/dt) D u*                                  (modified Poisson)
 u^{n+1} = u* − dt B^N G p                                        (projection)
 ```
+
+With `ib.geometry` set, the finest level instead solves the
+Taira-Colonius Schur system
+
+```
+[-D] B^N [G H] [p] = [        -D u*/dt]
+[ E]     [   ] [f]   [(E u* - U_B)/dt]
+```
+
+and projects with `u^{n+1} = u* − dt B^N (G p + H f)`.  `H` spreads the
+IB force component-wise to the matching MAC face family, and `E`
+interpolates face velocity back to the same Lagrangian markers.  The
+current implementation uses one marker per immersed element centroid,
+with element length/area as its quadrature weight.
 
 Why the modified Poisson `D B^N G` and not the standard `∇²` of a
 Chorin projection?  Perot 1997 shows that the exact block-LU
@@ -128,6 +143,31 @@ velocity ghosts.  Set `ins.check_pressure_pin = 1` on an outflow case
 to run a startup regression check that verifies a constant pressure
 field is not in the modified-Poisson nullspace.
 
+## Immersed boundary
+
+Enable the first IB projection path with:
+
+```text
+ib.geometry       = path/to/body.stl    # 3D build; 2D uses the ASCII curve format
+ib.velocity       = 0.0 0.0 0.0         # prescribed marker velocity, default zero
+ib.refine_radius  = 4.0                 # cell-width radius for AMR tagging
+```
+
+In 3D, STL may be ASCII or binary.  In 2D, the curve format is:
+
+```text
+n_points n_segments
+x y
+...
+i j
+...
+```
+
+Connectivity may be zero-based or one-based and is stored internally as
+zero-based.  Every MPI rank holds the full Lagrangian geometry and force
+vector.  The interpolation operator uses AMReX owner masks so faces
+shared by two face-centred boxes are not counted twice.
+
 ## Build / run
 
 All standard operations are wired up as Zed tasks in `.zed/tasks.json`
@@ -142,10 +182,10 @@ cmake --build build-debug --target ins_solver -j
 ln -sf build-debug/compile_commands.json compile_commands.json
 
 # Run single-level Taylor–Green vortex
-./build-debug/src/ins_solver inputs
+./build-debug/src/ins_solver tests/tg/inputs.tg
 
 # Run 2-level AMR Taylor–Green vortex
-./build-debug/src/ins_solver inputs.tg_amr
+./build-debug/src/ins_solver tests/tg_amr/inputs.tg_amr
 ```
 
 Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
@@ -153,12 +193,17 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 
 ## Test inputs
 
-| File             | Configuration                                                       |
-| ---------------- | ------------------------------------------------------------------- |
-| `inputs`         | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100.           |
-| `inputs.tg_amr`  | 32³ base + 1 refinement level (2× ratio), vorticity tagging.        |
-| `inputs.lid`     | Lid-driven cavity, Re = 100 (no-slip walls, moving lid, z-periodic).|
-| `inputs.channel` | Plane channel, uniform inflow / zero-gradient outflow, Re_h = 50.   |
+| Case | Configuration |
+| ---- | ------------- |
+| `tests/tg/inputs.tg` | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100. |
+| `tests/tg_amr/inputs.tg_amr` | 32³ base + 1 refinement level (2× ratio), vorticity tagging. |
+| `tests/tg2d/inputs.tg2d` | 2D Taylor–Green analytic/self-convergence case. |
+| `tests/lid/inputs.lid` | Lid-driven cavity, Re = 100 (no-slip walls, moving lid, z-periodic). |
+| `tests/lid_amr/inputs.lid_amr` | AMR lid-driven cavity. |
+| `tests/channel/inputs.channel` | Plane channel, uniform inflow / outflow, Re_h = 50. |
+| `tests/ib_plane/inputs.ib_plane` | Single-level coupled IB projection smoke test with `ib_plane.stl`. |
+| `tests/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection smoke test with AMR and `ib_plane.stl`. |
+| `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` | Channel past a stationary cylindrical IB surface; coarse `1.5dx` STL smoke case. |
 
 The Taylor–Green cases decay monotonically from the analytical IC;
 at convergence `|div u|_∞ ~ 10⁻¹¹` per step (Krylov tolerance
@@ -171,11 +216,13 @@ the pressure, so the mean is not removed).
 
 ## What's _not_ implemented yet
 
-- **Immersed-boundary projection / forcing**.  Only host-side geometry
-  loading exists so far.  The matrix structure changes to a saddle-point
-  system; see the `AGENTS.md` notes for the planned Trilinos /
-  matrix-free path.  Trilinos has been temporarily removed from
-  CMakeLists.txt and will return when this phase begins.
+- Moving/deforming-body kinematics beyond uniform prescribed
+  `ib.velocity`.
+- Tpetra/Belos wrapping and MLMG preconditioning for the IB Schur
+  operator.  The current coupled solve is still the local matrix-free
+  BiCGStab path.
+- Composite AMR IB projection.  IB coupling is applied on the finest
+  level only; coarser data is synchronized by average-down where covered.
 - Temporal subcycling between AMR levels.
 - Sync-solve refluxing of `∇φ` (the projection is "approximate" — the
   per-level local gradient plus a post-projection `average_down`).

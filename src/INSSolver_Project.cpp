@@ -226,9 +226,8 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
     SubtractMean(lev, p);
 
   if (m_verbose > 1) {
-    const Real relres =
-        std::sqrt(std::max(rsold, Real(0.0)) /
-                  std::max(rhs_norm2, Real(1.0e-300)));
+    const Real relres = std::sqrt(std::max(rsold, Real(0.0)) /
+                                  std::max(rhs_norm2, Real(1.0e-300)));
     Print() << "  Perot BiCGStab lev " << lev << ": " << iter
             << " iters, |r|/|rhs| = " << relres << "\n";
   }
@@ -281,6 +280,8 @@ void INSSolver::ProjectPerot() {
   for (int lev = 0; lev < nlev; ++lev) {
     const BoxArray &ba = grids[lev];
     const DistributionMapping &dm = dmap[lev];
+    const bool use_ib = m_ib_enabled && lev == finest_level &&
+                        !m_ib_geometry.markers.empty();
 
     // RHS = −(1/dt) D u*   (negated to pair with the negated operator)
     MultiFab rhs(ba, dm, 1, 0);
@@ -304,18 +305,37 @@ void INSSolver::ProjectPerot() {
       auto const &w = m_vstar[lev][2]->const_array(mfi);
 #endif
       auto const &r = rhs.array(mfi);
-      amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        Real d = cx * (u(i + 1, j, k) - u(i, j, k)) +
-                 cy * (v(i, j + 1, k) - v(i, j, k));
+      amrex::ParallelFor(bx,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           Real d = cx * (u(i + 1, j, k) - u(i, j, k)) +
+                                    cy * (v(i, j + 1, k) - v(i, j, k));
 #if AMREX_SPACEDIM == 3
-        d += cz * (w(i, j, k + 1) - w(i, j, k));
+                           d += cz * (w(i, j, k + 1) - w(i, j, k));
 #endif
-        r(i, j, k) = d;
-      });
+                           r(i, j, k) = d;
+                         });
     }
 
-    // Solve  (D B^N G) p^{n+1} = rhs.   Warm-start with the previous pressure.
-    SolveModifiedPoisson(lev, *m_pressure[lev], rhs);
+    if (use_ib) {
+      std::vector<Real> rhs_ib;
+      InterpolateIBVelocity(
+          lev,
+          {AMREX_D_DECL(m_vstar[lev][0].get(), m_vstar[lev][1].get(),
+                        m_vstar[lev][2].get())},
+          rhs_ib);
+      for (std::size_t marker = 0; marker < m_ib_geometry.markers.size();
+           ++marker) {
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+          const auto n = marker * AMREX_SPACEDIM + d;
+          rhs_ib[n] = (rhs_ib[n] - m_ib_velocity[d]) / m_dt;
+        }
+      }
+
+      SolveIBProjection(lev, *m_pressure[lev], rhs, rhs_ib);
+    } else {
+      // Solve  (D B^N G) p^{n+1} = rhs.   Warm-start with previous pressure.
+      SolveModifiedPoisson(lev, *m_pressure[lev], rhs);
+    }
 
     // Projection:  u^{n+1} = u* − dt B^N G p^{n+1}
     //  (same B^N as in the predictor and the operator — this is the
@@ -334,6 +354,11 @@ void INSSolver::ProjectPerot() {
 
       gp.setVal(0.0);
       ComputePressureGradient(lev, d, phi_g, gp);
+      if (use_ib) {
+        MultiFab hf(fba, dm, 1, 0);
+        SpreadIBForce(lev, d, m_ib_force, hf);
+        MultiFab::Add(gp, hf, 0, 0, 1, 0);
+      }
 
       ApplyBNFace(lev, d, gp, bgp);
 
@@ -345,5 +370,23 @@ void INSSolver::ProjectPerot() {
     // Re-impose the prescribed wall velocity (the local projection
     // does not preserve inhomogeneous Dirichlet data exactly).
     EnforceVelDirichlet(lev, vel_out);
+
+    if (use_ib && m_verbose > 1) {
+      std::vector<Real> marker_vel;
+      InterpolateIBVelocity(
+          lev,
+          {AMREX_D_DECL(m_vel[lev][0].get(), m_vel[lev][1].get(),
+                        m_vel[lev][2].get())},
+          marker_vel);
+      Real slip = 0.0_rt;
+      for (std::size_t marker = 0; marker < m_ib_geometry.markers.size();
+           ++marker) {
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+          const auto n = marker * AMREX_SPACEDIM + d;
+          slip = std::max(slip, std::abs(marker_vel[n] - m_ib_velocity[d]));
+        }
+      }
+      Print() << "  |E u - U_ib|_inf = " << slip << "\n";
+    }
   }
 }

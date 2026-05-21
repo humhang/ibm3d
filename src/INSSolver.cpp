@@ -28,6 +28,7 @@ using namespace amrex;
 // ============================================================
 INSSolver::INSSolver() {
   ReadParameters();
+  InitializeIBGeometry();
   ParseBCs();
   BuildBCRecs();
 
@@ -75,6 +76,20 @@ void INSSolver::ReadParameters() {
   pp.query("tg_vc", m_tg_vc);
   pp.query("tg2d_dump", m_tg2d_dump);
   pp.query("tg2d_cmp", m_tg2d_cmp);
+
+  ParmParse ibpp("ib");
+  ibpp.query("enabled", m_ib_enabled);
+  ibpp.query("geometry", m_ib_geometry_file);
+  ibpp.query("geom_file", m_ib_geometry_file);
+  ibpp.query("refine_radius", m_ib_refine_radius);
+
+  Vector<Real> vel;
+  if (ibpp.queryarr("velocity", vel) && vel.size() >= AMREX_SPACEDIM) {
+    for (int d = 0; d < AMREX_SPACEDIM; ++d)
+      m_ib_velocity[d] = vel[d];
+  }
+  if (!m_ib_geometry_file.empty())
+    m_ib_enabled = true;
 }
 
 // ============================================================
@@ -355,13 +370,12 @@ void INSSolver::InitFlowField(int lev) {
       auto const &w = m_vel[lev][2]->array(mfi);
 #endif
       const Box &bx_cc = mfi.tilebox();
-      amrex::ParallelFor(bx_cc,
-                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-                           const Real x = plo[0] + (i + 0.5_rt) * dx[0];
-                           const Real y = plo[1] + (j + 0.5_rt) * dx[1];
-                           p(i, j, k) = -0.25_rt * (std::cos(2.0_rt * x) +
-                                                    std::cos(2.0_rt * y));
-                         });
+      amrex::ParallelFor(bx_cc, [=] AMREX_GPU_DEVICE(int i, int j,
+                                                     int k) noexcept {
+        const Real x = plo[0] + (i + 0.5_rt) * dx[0];
+        const Real y = plo[1] + (j + 0.5_rt) * dx[1];
+        p(i, j, k) = -0.25_rt * (std::cos(2.0_rt * x) + std::cos(2.0_rt * y));
+      });
       const Box &bx_u = mfi.tilebox(IntVect::TheDimensionVector(0));
       amrex::ParallelFor(bx_u,
                          [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
@@ -378,10 +392,10 @@ void INSSolver::InitFlowField(int lev) {
                          });
 #if AMREX_SPACEDIM == 3
       const Box &bx_w = mfi.tilebox(IntVect::TheDimensionVector(2));
-      amrex::ParallelFor(
-          bx_w, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            w(i, j, k) = 0.0_rt;
-          });
+      amrex::ParallelFor(bx_w,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           w(i, j, k) = 0.0_rt;
+                         });
 #endif
     }
     SyncFillICGhosts(lev);
@@ -398,48 +412,52 @@ void INSSolver::InitFlowField(int lev) {
     auto const &w = m_vel[lev][2]->array(mfi);
 #endif
 
-    amrex::ParallelFor(bx_cc, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      const Real x = plo[0] + (i + 0.5_rt) * dx[0];
-      const Real y = plo[1] + (j + 0.5_rt) * dx[1];
+    amrex::ParallelFor(
+        bx_cc, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+          const Real x = plo[0] + (i + 0.5_rt) * dx[0];
+          const Real y = plo[1] + (j + 0.5_rt) * dx[1];
 #if AMREX_SPACEDIM == 3
-      const Real z = plo[2] + (k + 0.5_rt) * dx[2];
-      p(i, j, k) = (1.0_rt / 16.0_rt) *
-                   (std::cos(2.0_rt * x) + std::cos(2.0_rt * y)) *
-                   (std::cos(2.0_rt * z) + 2.0_rt);
+          const Real z = plo[2] + (k + 0.5_rt) * dx[2];
+          p(i, j, k) = (1.0_rt / 16.0_rt) *
+                       (std::cos(2.0_rt * x) + std::cos(2.0_rt * y)) *
+                       (std::cos(2.0_rt * z) + 2.0_rt);
 #else
       p(i, j, k) = -0.25_rt * (std::cos(2.0_rt * x) + std::cos(2.0_rt * y));
 #endif
-    });
+        });
 
     const Box &bx_u = mfi.tilebox(IntVect::TheDimensionVector(0));
-    amrex::ParallelFor(bx_u, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      const Real x = plo[0] + i * dx[0];
-      const Real y = plo[1] + (j + 0.5_rt) * dx[1];
+    amrex::ParallelFor(bx_u,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                         const Real x = plo[0] + i * dx[0];
+                         const Real y = plo[1] + (j + 0.5_rt) * dx[1];
 #if AMREX_SPACEDIM == 3
-      const Real z = plo[2] + (k + 0.5_rt) * dx[2];
-      u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
+                         const Real z = plo[2] + (k + 0.5_rt) * dx[2];
+                         u(i, j, k) = std::sin(x) * std::cos(y) * std::cos(z);
 #else
       u(i, j, k) = std::sin(x) * std::cos(y);
 #endif
-    });
+                       });
 
     const Box &bx_v = mfi.tilebox(IntVect::TheDimensionVector(1));
-    amrex::ParallelFor(bx_v, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      const Real x = plo[0] + (i + 0.5_rt) * dx[0];
-      const Real y = plo[1] + j * dx[1];
+    amrex::ParallelFor(bx_v,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                         const Real x = plo[0] + (i + 0.5_rt) * dx[0];
+                         const Real y = plo[1] + j * dx[1];
 #if AMREX_SPACEDIM == 3
-      const Real z = plo[2] + (k + 0.5_rt) * dx[2];
-      v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
+                         const Real z = plo[2] + (k + 0.5_rt) * dx[2];
+                         v(i, j, k) = -std::cos(x) * std::sin(y) * std::cos(z);
 #else
       v(i, j, k) = -std::cos(x) * std::sin(y);
 #endif
-    });
+                       });
 
 #if AMREX_SPACEDIM == 3
     const Box &bx_w = mfi.tilebox(IntVect::TheDimensionVector(2));
-    amrex::ParallelFor(bx_w, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      w(i, j, k) = 0.0_rt;
-    });
+    amrex::ParallelFor(bx_w,
+                       [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                         w(i, j, k) = 0.0_rt;
+                       });
 #endif
   }
 
@@ -659,25 +677,27 @@ void INSSolver::ComputeCellCenteredVorticityMag(int lev, MultiFab &vortmag) {
 
 void INSSolver::ErrorEst(int lev, TagBoxArray &tags, Real /*time*/,
                          int /*ngrow*/) {
-  if (m_refine_vort <= 0.0)
-    return;
+  if (m_refine_vort > 0.0) {
+    MultiFab vortmag(grids[lev], dmap[lev], 1, 0);
+    vortmag.setVal(0.0);
+    ComputeCellCenteredVorticityMag(lev, vortmag);
 
-  MultiFab vortmag(grids[lev], dmap[lev], 1, 0);
-  vortmag.setVal(0.0);
-  ComputeCellCenteredVorticityMag(lev, vortmag);
+    const Real thr = m_refine_vort;
+    const char tagval = TagBox::SET;
 
-  const Real thr = m_refine_vort;
-  const char tagval = TagBox::SET;
-
-  for (MFIter mfi(vortmag, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-    const Box &bx = mfi.tilebox();
-    auto const &om = vortmag.const_array(mfi);
-    auto const &tag = tags.array(mfi);
-    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      if (om(i, j, k) > thr)
-        tag(i, j, k) = tagval;
-    });
+    for (MFIter mfi(vortmag, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+      const Box &bx = mfi.tilebox();
+      auto const &om = vortmag.const_array(mfi);
+      auto const &tag = tags.array(mfi);
+      amrex::ParallelFor(bx,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           if (om(i, j, k) > thr)
+                             tag(i, j, k) = tagval;
+                         });
+    }
   }
+
+  AddIBTags(lev, tags);
 }
 
 // ============================================================
@@ -705,18 +725,19 @@ void INSSolver::WritePlotFile() {
 #endif
       auto const &pres = m_pressure[lev]->const_array(mfi);
       auto const &om = vortmag.const_array(mfi);
-      amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        out(i, j, k, 0) = 0.5_rt * (u(i, j, k) + u(i + 1, j, k));
-        out(i, j, k, 1) = 0.5_rt * (v(i, j, k) + v(i, j + 1, k));
+      amrex::ParallelFor(
+          bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+            out(i, j, k, 0) = 0.5_rt * (u(i, j, k) + u(i + 1, j, k));
+            out(i, j, k, 1) = 0.5_rt * (v(i, j, k) + v(i, j + 1, k));
 #if AMREX_SPACEDIM == 3
-        out(i, j, k, 2) = 0.5_rt * (w(i, j, k) + w(i, j, k + 1));
-        out(i, j, k, 3) = pres(i, j, k);
-        out(i, j, k, 4) = om(i, j, k);
+            out(i, j, k, 2) = 0.5_rt * (w(i, j, k) + w(i, j, k + 1));
+            out(i, j, k, 3) = pres(i, j, k);
+            out(i, j, k, 4) = om(i, j, k);
 #else
         out(i, j, k, 2) = pres(i, j, k);
         out(i, j, k, 3) = om(i, j, k);
 #endif
-      });
+          });
     }
   }
 
@@ -742,8 +763,8 @@ void INSSolver::WritePlotFile() {
   }
 
   const std::string name = amrex::Concatenate(m_plot_prefix, m_step, 6);
-  WriteMultiLevelPlotfile(name, finest_level + 1, mf_ptrs, names, g,
-                          m_cur_time, level_steps, rratio);
+  WriteMultiLevelPlotfile(name, finest_level + 1, mf_ptrs, names, g, m_cur_time,
+                          level_steps, rratio);
   Print() << "Wrote " << name << "\n";
 }
 
@@ -782,14 +803,15 @@ Real INSSolver::ComputeMaxDivergence() const {
       auto const &w = m_vel[lev][2]->const_array(mfi);
 #endif
       auto const &dv = div.array(mfi);
-      amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        Real d = idx * (u(i + 1, j, k) - u(i, j, k)) +
-                 idy * (v(i, j + 1, k) - v(i, j, k));
+      amrex::ParallelFor(bx,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           Real d = idx * (u(i + 1, j, k) - u(i, j, k)) +
+                                    idy * (v(i, j + 1, k) - v(i, j, k));
 #if AMREX_SPACEDIM == 3
-        d += idz * (w(i, j, k + 1) - w(i, j, k));
+                           d += idz * (w(i, j, k + 1) - w(i, j, k));
 #endif
-        dv(i, j, k) = d;
-      });
+                           dv(i, j, k) = d;
+                         });
     }
     m = std::max(m, div.norminf(0, 0));
   }
@@ -854,8 +876,7 @@ void INSSolver::WriteTG2DDiagnostics() const {
   ComputeTG2DError(m_cur_time, l2, linf);
   Print() << "TG2D-ERROR  ncell=" << geom[0].Domain().length(0)
           << "  dx=" << geom[0].CellSize()[0] << "  dt=" << m_dt
-          << "  t=" << m_cur_time << "  L2=" << l2 << "  Linf=" << linf
-          << "\n";
+          << "  t=" << m_cur_time << "  L2=" << l2 << "  Linf=" << linf << "\n";
 
   if (m_tg2d_dump.empty() && m_tg2d_cmp.empty())
     return;

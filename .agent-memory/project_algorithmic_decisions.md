@@ -6,7 +6,7 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
 Decisions baked into the current solver, with rationale:
 
-1. **MAC staggered grid**.  u, v, w on face-centred MultiFabs; p and φ on
+1. **MAC staggered grid**.  u, v, w on face-centred MultiFabs; p on
    cell-centred MultiFabs.  Standard for incompressible NS — pressure
    decoupled on the discrete grid, exact discrete projection possible.
 
@@ -47,16 +47,18 @@ Decisions baked into the current solver, with rationale:
    interpolation of ghost data, no nested time loops.  IAMR-style
    subcycling can be retrofitted later if needed.
 
-7. **Approximate composite projection**.  Local `∇φ` is computed on each
-   level and applied as `u^{n+1} = u* − dt ∇φ`.  After projection,
+7. **Approximate composite projection**.  Each level applies the local
+   Perot correction `u^{n+1} = u* − dt B^N G p` (or, on the finest IB
+   level, `u* − dt B^N (G p + H f)`).  After projection,
    `average_down_faces(m_vel)` and `average_down(m_pressure)` sync the
    coarse-level overlap with the fine averages, which absorbs the small
    divergence residual the local projection leaves on C/F-adjacent coarse
-   cells.  Verified: `|div u|_∞ < 10⁻¹⁴` on the Taylor–Green AMR test.
-   Full refluxing of `∇φ` (a "sync solve") is **not** implemented and is
-   not needed for the current test suite — but would be required if the
-   composite divergence had to be exactly zero (e.g. for very long-time
-   stability or for the IBPM constraint).
+   cells.  Periodic Taylor–Green AMR reaches the Krylov tolerance; AMR
+   with nonperiodic boundaries or IB coupling can retain a bounded C/F
+   divergence defect until a proper composite projection is added.
+   Full refluxing of the correction (a "sync solve") is **not**
+   implemented and is not needed for the current smoke tests — but would
+   be required if the composite divergence had to be exactly zero.
 
 8. **Vorticity-based refinement tagging**.  `ErrorEst` computes
    `|ω|` at cell centres from averaged face velocities and tags cells
@@ -89,12 +91,12 @@ Decisions baked into the current solver, with rationale:
      velocity is re-imposed on `u*` and `u^{n+1}` by
      `EnforceVelDirichlet` after the predictor and the projection.
      Standard low-truncation-order treatment; O(εL·boundary) error.
-   - **Tested**: periodic Taylor–Green regression is stable; `inputs.lid`
-     and `inputs.channel` have been run-verified.  The channel case is
+   - **Tested**: periodic Taylor–Green regression is stable; `tests/lid/inputs.lid`
+     and `tests/channel/inputs.channel` have been run-verified.  The channel case is
      the outflow-Dirichlet pressure check.
 
 10. **Per-level operator must zero its coarse–fine ghosts**
-    (bug found + fixed 2026-05-18, `inputs.lid_amr`).  The per-level
+    (bug found + fixed 2026-05-18, `tests/lid_amr/inputs.lid_amr`).  The per-level
     modified-Poisson Krylov path (`SolveModifiedPoisson` / `ApplyBNFace` /
     `ApplyModifiedPoissonOp`) only fills ghosts via `FillBoundary` +
     domain physical BC.  It does **not** interpolate C/F ghosts from
@@ -170,7 +172,7 @@ Decisions baked into the current solver, with rationale:
 
     **Verified 2026-05-18**: single-level lid `|div u|~3e-11`;
     1-level AMR lid stable, `|u|` tracks single-level, `|div u|~1e-2`
-    at C/F; full 2-level `inputs.lid_amr` stable, `|u|` 0.07→0.23
+    at C/F; full 2-level `tests/lid_amr/inputs.lid_amr` stable, `|u|` 0.07→0.23
     smooth, `|div u|~2e-2` (bounded, steady).  The residual
     `|div u|~1e-2` at C/F is the *expected* per-level-approximation
     error (Dirichlet-from-coarse, no reflux) — interior is
@@ -188,7 +190,7 @@ Decisions baked into the current solver, with rationale:
     harmless at fixed grid).  Replaced explicit Euler `dt·A^n`.  The
     diffusion time order equals the `B^N` truncation order N, so
     `m_cn_order` default is now **2** (was 1) and every shipped
-    `inputs.*` sets `cn_order=2`; the scheme is globally 2nd-order in
+    `tests/*/inputs.*` sets `cn_order=2`; the scheme is globally 2nd-order in
     time only with AB2 AND N≥2.  Verified by self-convergence on the
     stationary TG2D (diffusion order, =N) and the convecting TG2D
     (advection order, AB2) — both clean 2.00.  See
@@ -228,3 +230,19 @@ Decisions baked into the current solver, with rationale:
     This makes quiescent moving-wall and inflow starts choose a sensible
     advective dt immediately; the diffusive `B^N` cap may still be the
     active limit.
+
+14. **First IB projection path is executable but deliberately local**
+    (added 2026-05-20).  `IBGeometry` loads 2D ASCII curves or 3D
+    ASCII/binary STL surfaces, builds one marker per element centroid,
+    stores host/device points/elements/markers as AMReX `GpuArray`
+    records, and uploads device copies.  `INSSolver_IB.cpp` implements
+    Peskin 4-point `H/E`, owner-mask interpolation to avoid double-counted
+    shared faces, GPU-ready IB refinement tagging, and a finest-level
+    coupled BiCGStab solve for `[-D; E] B^N [G H] [p; f]`.  IB coupling is
+    applied only on the finest AMR level; coarser data is overwritten by
+    average-down where covered.  The supplied IB smoke cases are:
+    `tests/ib_plane`, `tests/ib_plane_amr`, and
+    `tests/ib_cylinder_channel`.  The cylinder case intentionally uses an
+    STL panel size near `1.5 * dx` because the current unpreconditioned
+    coupled solve is sensitive to over-refined IB meshes.  The planned
+    Tpetra/Belos + MLMG path remains future work.

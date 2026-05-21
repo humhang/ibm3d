@@ -1,0 +1,66 @@
+# ============================================================
+# inputs.ib_cylinder_channel — channel flow past a stationary cylinder
+#
+# This is a more geometric IB smoke case built from tests/channel.
+# The current coupled IB projection is still the local unpreconditioned
+# BiCGStab path, so this case deliberately uses an IB panel size near
+# 1.5 * dx instead of a finer body mesh.
+#
+# Geometry:
+#   cylinder center  = (1.0, 0.5), z-axis
+#   radius           = 0.125
+#   z span           = [0.0, 0.25] with periodic fluid z
+#   STL panels       = 8 around x 3 along z = 48 triangles
+#   fluid dx         = 1/16 = 0.0625
+#   IB panel sizes   = chord 0.09567, axial 0.08333
+#
+# Expected one-step smoke output with ins.verbose=2:
+#   IB BiCGStab lev 0: O(200) iters at 1e-4 relative residual
+#   |E u - U_ib|_inf = O(1e-3)
+#   |div u|_inf      = O(1e-4)
+#
+# Regenerate the STL with:
+#   python3 tests/ib_cylinder_channel/generate_cylinder_stl.py
+#
+# Run from the repository root:
+#   ./build-release/src/ins_solver tests/ib_cylinder_channel/inputs.ib_cylinder_channel
+# ============================================================
+
+# ---- Domain ----  L = 4, h = 1, thin isotropic z
+geometry.prob_lo     =  0.0  0.0  0.0
+geometry.prob_hi     =  4.0  1.0  0.25
+geometry.is_periodic =  0  0  1
+
+# ---- Grid ----  dx = dy = dz = 1/16 = 0.0625
+amr.n_cell           =  64  16  4
+amr.max_level        =  0
+amr.blocking_factor  =  4
+amr.max_grid_size    =  32
+amr.v                =  1
+
+# ---- Boundary conditions ----
+ins.bc_xlo = inflow
+ins.bc_xhi = outflow
+ins.bc_ylo = noslip
+ins.bc_yhi = noslip
+ins.bc_zlo = periodic
+ins.bc_zhi = periodic
+
+ins.vel_xlo = 1.0 0.0 0.0
+
+# ---- Solver ----
+ins.ic               =  quiescent
+ins.nu               =  2.0e-2
+ins.cfl              =  0.4
+ins.t_stop           =  20.0
+ins.max_step         =  1
+ins.plot_int         =  0
+ins.cn_order         =  2
+ins.poisson_tol      =  1.0e-4
+ins.poisson_max_iter =  1000
+ins.verbose          =  2
+ins.plot_prefix      =  plt_ib_cylinder_channel
+
+# ---- Immersed boundary ----
+ib.geometry          =  tests/ib_cylinder_channel/cylinder.stl
+ib.velocity          =  0.0  0.0  0.0

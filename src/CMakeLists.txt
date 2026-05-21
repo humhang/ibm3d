@@ -5,6 +5,7 @@ set(SOURCES
         INSSolver_Advect.cpp
         INSSolver_Diffuse.cpp
         INSSolver_Project.cpp
+        INSSolver_IB.cpp
         IBGeometry.cpp
 )
 

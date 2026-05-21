@@ -1,0 +1,51 @@
+# ============================================================
+# inputs.ib_plane_amr — AMR IB projection smoke test
+#
+# Same stationary two-triangle immersed plane as tests/ib_plane, but
+# with one refinement level.  Vorticity tagging stays active and the IB
+# marker-neighborhood tags guarantee the body is also covered by the
+# finest mesh.
+#
+# Expected with ins.verbose=2:
+#   level 0 pressure-only Perot solve
+#   level 1 coupled IB solve
+#   |E u - U_ib|_inf ~ 1e-10
+#   |div u|_inf      ~ 1e-11
+#
+# Run from the repository root:
+#   ./build-release/src/ins_solver tests/ib_plane_amr/inputs.ib_plane_amr
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  0.0                0.0                0.0
+geometry.prob_hi     =  6.283185307179586  6.283185307179586  6.283185307179586
+geometry.is_periodic =  1  1  1
+
+# ---- AMR ----
+amr.n_cell           =  32  32  32
+amr.max_level        =  1
+amr.ref_ratio        =  2
+amr.blocking_factor  =  4
+amr.max_grid_size    =  16
+amr.v                =  1
+amr.n_error_buf      =  2
+amr.grid_eff         =  0.7
+
+# ---- Solver ----
+ins.nu               =  1.0e-2
+ins.cfl              =  0.5
+ins.t_stop           =  5.0
+ins.max_step         =  1
+ins.plot_int         =  0
+ins.cn_order         =  2
+ins.regrid_int       =  5
+ins.refine_vort      =  1.0
+ins.poisson_tol      =  1.0e-10
+ins.poisson_max_iter =  1000
+ins.verbose          =  2
+ins.plot_prefix      =  plt_ib_plane_amr
+
+# ---- Immersed boundary ----
+ib.geometry          =  tests/ib_plane_amr/ib_plane.stl
+ib.velocity          =  0.0  0.0  0.0
+ib.refine_radius     =  4.0

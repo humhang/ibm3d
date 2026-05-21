@@ -1,9 +1,12 @@
 #ifndef INS_SOLVER_H
 #define INS_SOLVER_H
 
+#include "IBGeometry.H"
+
 #include <AMReX_AmrCore.H>
 #include <AMReX_BCRec.H>
 #include <AMReX_Geometry.H>
+#include <AMReX_GpuContainers.H>
 #include <AMReX_MultiFab.H>
 #include <AMReX_RealVect.H>
 
@@ -13,7 +16,7 @@
 
 /// Incompressible Navier–Stokes solver on a staggered (MAC) AMR grid,
 /// using the Perot 1997 exact-factorisation fractional-step method
-/// (= Taira–Colonius 2007 minus the immersed-boundary block).
+/// with an optional Taira–Colonius immersed-boundary projection.
 ///
 /// Layout
 /// ------
@@ -30,9 +33,8 @@
 ///   2.  r1   = (I + εL) u^n + dt A^n                   (NO pressure gradient —
 ///   Perot)
 ///   3.  u*   = B^N r1                                   (predictor)
-///   4.  Solve  (D B^N G) p^{n+1} = (1/dt) D u*          (modified Poisson,
-///   matrix-free Krylov)
-///   5.  u^{n+1} = u* − dt B^N G p^{n+1}                  (Perot projection)
+///   4.  Solve the modified Poisson / optional IB Schur system.
+///   5.  u^{n+1} = u* − dt B^N (G p^{n+1} [+ H f])
 ///   6.  Average u^{n+1} and p^{n+1} fine→coarse on overlapping faces / cells.
 ///
 /// Why this differs from a textbook Chorin / incremental projection
@@ -121,6 +123,14 @@ private:
   std::string m_tg2d_dump;
   std::string m_tg2d_cmp;
 
+  // ---------------- Immersed boundary ----------------
+  bool m_ib_enabled = false;
+  std::string m_ib_geometry_file;
+  amrex::RealVect m_ib_velocity = amrex::RealVect::TheZeroVector();
+  amrex::Real m_ib_refine_radius = 4.0; ///< in local cell widths
+  ibm3d::IBGeometry m_ib_geometry;
+  std::vector<amrex::Real> m_ib_force;
+
   // ---------------- Boundary conditions ----------------
   // Indexed by direction (0=x, 1=y, 2=z); lo and hi domain faces.
   std::array<BCKind, AMREX_SPACEDIM> m_bc_lo{};
@@ -158,6 +168,7 @@ private:
 public:
   // ---------------- Helpers ----------------
   void ReadParameters();
+  void InitializeIBGeometry();
   void ParseBCs();    ///< read ins.bc_* / ins.vel_* and validate
   void BuildBCRecs(); ///< translate BCKind → AMReX BCRec for FillPatch
   void AllocateLevelStorage(int lev, const amrex::BoxArray &ba,
@@ -220,6 +231,20 @@ public:
   /// `rhs` is read-only.  Returns the iteration count.
   int SolveModifiedPoisson(int lev, amrex::MultiFab &p,
                            const amrex::MultiFab &rhs);
+
+  int SolveIBProjection(int lev, amrex::MultiFab &p,
+                        const amrex::MultiFab &rhs_p,
+                        const std::vector<amrex::Real> &rhs_ib);
+  void ApplyIBSchurOp(int lev, const amrex::MultiFab &phi,
+                      const std::vector<amrex::Real> &force,
+                      amrex::MultiFab &result_p,
+                      std::vector<amrex::Real> &result_ib);
+  void SpreadIBForce(int lev, int dir, const std::vector<amrex::Real> &force,
+                     amrex::MultiFab &hforce);
+  void InterpolateIBVelocity(
+      int lev, const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel,
+      std::vector<amrex::Real> &marker_vel) const;
+  void AddIBTags(int lev, amrex::TagBoxArray &tags) const;
 
   /// Optional regression check: outflow Dirichlet pressure must remove
   /// the constant-pressure null mode.

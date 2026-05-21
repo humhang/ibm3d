@@ -1,21 +1,36 @@
 #ifndef IB_GEOMETRY_H
 #define IB_GEOMETRY_H
 
+#include <AMReX_Array.H>
 #include <AMReX_Config.H>
+#include <AMReX_GpuContainers.H>
 #include <AMReX_REAL.H>
 
-#include <array>
 #include <string>
 #include <vector>
 
 namespace ibm3d {
 
+struct IBMarker {
+  amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> x{};
+  amrex::Real weight = 0.0;
+};
+
 struct IBGeometry {
-  using Point = std::array<amrex::Real, AMREX_SPACEDIM>;
-  using Element = std::array<int, AMREX_SPACEDIM>;
+  using Point = amrex::GpuArray<amrex::Real, AMREX_SPACEDIM>;
+  using Element = amrex::GpuArray<int, AMREX_SPACEDIM>;
 
   std::vector<Point> points;
   std::vector<Element> elements;
+  std::vector<IBMarker> markers;
+
+  amrex::Gpu::DeviceVector<Point> device_points;
+  amrex::Gpu::DeviceVector<Element> device_elements;
+  amrex::Gpu::DeviceVector<IBMarker> device_markers;
+
+  void BuildMarkers(const std::string &source_path);
+  void UploadToDevice();
+  void ClearDevice();
 };
 
 #if (AMREX_SPACEDIM == 2)

@@ -46,18 +46,34 @@ Time: advection = AB2 `dt(3/2 A^n − 1/2 A^{n-1})` ⇒ 2nd order;
 diffusion = `B^N` truncated Neumann ⇒ order N.  Globally 2nd-order
 in time **iff** AB2 is active AND `cn_order ≥ 2`.  Default
 `m_cn_order` is now **2** for exactly this reason; all the shipped
-`inputs.*` set `cn_order=2`.  AB2 falls back to Euler on step 1 and
+`tests/*/inputs.*` set `cn_order=2`.  AB2 falls back to Euler on step 1 and
 the first step after a regrid (`m_ab2_valid`) — one O(dt²) step,
 harmless at fixed grid; with *frequent* regrids it can erode the
 formal temporal order (the deferred fix is to FillPatch
 `m_advect_old` through the regrid hooks, like the velocity).
 
-**Reproduce:** `inputs.tg2d` (ic=tg2d; set `tg_uc`/`tg_vc` for the
+**Reproduce:** `tests/tg2d/inputs.tg2d` (ic=tg2d; set `tg_uc`/`tg_vc` for the
 convecting case).  Prints `TG2D-ERROR … L2= Linf=`; with
 `ins.tg2d_dump`/`ins.tg2d_cmp` prints `TG2D-SELFCONV … L2diff=`.
 Code: `ComputeTG2DError` + the tg2d branch in `InitFlowField` +
 the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
 `Advance` (`m_advect_old`, `m_ab2_valid`).
+
+**IB smoke tests (2026-05-20):**
+
+- `tests/ib_plane/inputs.ib_plane` — single-level two-triangle STL
+  plane in the Taylor–Green field.  One step gives
+  `|E u - U_ib|_inf ≈ 9.3e-11`, `|div u|_inf ≈ 3e-12`.
+- `tests/ib_plane_amr/inputs.ib_plane_amr` — same geometry with one
+  refinement level.  Vorticity tags plus IB tags keep the body on the
+  finest mesh.  One step gives `|E u - U_ib|_inf ≈ 2.2e-10`,
+  `|div u|_inf ≈ 2.3e-11`.
+- `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` — channel
+  flow past a stationary radius-0.125 cylinder, with STL panel sizes
+  near `1.5 * dx` for the current unpreconditioned coupled solver.
+  One step gives roughly 200 IB BiCGStab iterations at `1e-4`
+  relative residual, `|E u - U_ib|_inf ≈ 2e-3`, and
+  `|div u|_inf ≈ 1e-4`.
 
 **Takeaway:** discretisation is correct at its design rate
 (2nd/2nd).  When verifying any time-stepping change, run the

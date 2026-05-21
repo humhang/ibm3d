@@ -1,12 +1,13 @@
 ---
 name: Reference — IBAMR as the production reference for AMR + Taira–Colonius IBPM
-description: The closest existing implementation of what ibm3d will eventually be; consult their design decisions when in doubt.
+description: The closest production implementation of the scalable AMR + Taira-Colonius direction; consult their design decisions when in doubt.
 type: reference
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
 **IBAMR** (Bhalla, Griffith et al.) is the canonical AMR + immersed-boundary
-projection method codebase.  It implements essentially the same algorithm
-the user is targeting here, on a different software stack.
+projection method codebase.  It implements the production-scale version
+of the algorithm this repo is now prototyping, on a different software
+stack.
 
 - Stack: SAMRAI (AMR) + PETSc (Krylov + matrix-free operators) +
   libMesh (FE-IB for elastic bodies).

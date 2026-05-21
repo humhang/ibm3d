@@ -1,6 +1,6 @@
 ---
 name: Project — ibm3d goal and current status
-description: Identifies the end goal of the ibm3d project (AMR + Taira–Colonius IBPM) and what's actually implemented today (NS+AMR only).
+description: Identifies the end goal of the ibm3d project (AMR + Taira–Colonius IBPM) and what's implemented today.
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
@@ -8,10 +8,9 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 solver implementing the **Taira–Colonius immersed-boundary projection method**
 (JCP 2007, doi.org/10.1016/j.jcp.2007.03.005) on top of AMReX.
 
-**Current status (as of 2026-05-19)**: the *substrate*
-— pure NS+AMR without immersed bodies — is implemented and verified
-using the **Perot 1997 / Taira–Colonius (without IB)** fractional-step
-method.
+**Current status (as of 2026-05-20)**: the NS+AMR substrate is
+implemented and verified, and the first prescribed-velocity
+Taira–Colonius IB projection path is in place on the finest AMR level.
 
 - Staggered (MAC) grid, second-order centred differencing.
 - Explicit AB2 advection, Crank–Nicolson diffusion via truncated Neumann
@@ -25,6 +24,14 @@ method.
   is the Krylov warm start.  `m_phi` is gone.
 - Physical BCs are implemented (`periodic`, `noslip`, `inflow`, `slip`,
   `outflow`); pressure C/F interpolation uses `pc_interp`.
+- IB geometry loads from 2D ASCII curves or 3D ASCII/binary STL surfaces.
+  `IBGeometry` owns host/device points, elements, and element-centroid
+  markers using AMReX `GpuArray` records; marker weights are line length
+  in 2D or triangle area in 3D.
+- The coupled finest-level projection solves `[-D; E] B^N [G H] [p; f]`
+  with the existing matrix-free BiCGStab path.  `H` spreads force
+  components to matching MAC faces and `E` interpolates using owner masks
+  to avoid double-counting shared patch faces.
 - Verified on 3D Taylor–Green vortex: `|div u|_∞ ~ 10⁻¹¹` per step at
   single level *and* at 2 AMR levels (Krylov tolerance dominated, not
   method error), monotonic energy decay matching the previous
@@ -40,12 +47,16 @@ the standard one.  See `project_algorithmic_decisions.md` for the
 algorithmic rationale and `reference_perot_operator_sign.md` for the
 sign-convention bug that ate ~30 minutes during the rewrite.
 
-**Why:** the user wanted the NS+AMR foundation working independently
-before adding the IB machinery, since the IB step changes the linear
-operator into a saddle-point system and is invasive.
+**What changed on 2026-05-20**: the first IB pass added geometry loading
+with device copies, element-centroid markers in `IBGeometry`, Peskin
+4-point spread/interp, GPU-ready finest-level IB tagging, and the
+coupled projection in `ProjectPerot`.  The Tpetra/Belos wrapper and
+MLMG preconditioner are still future work; the initial path deliberately
+reuses the local BiCGStab solver so the operator is executable
+immediately.
 
-**How to apply:** treat the codebase as a *scaffold* the IB step will be
-grafted onto.  Don't refactor away the per-level FillPatch / averaging
-patterns — they're the load-bearing AMR machinery the IB code will reuse.
-Trilinos has been temporarily removed from the build; it will return when
-the IB is added (see `project_ib_matrixfree_plan.md`).
+**How to apply:** keep the Perot `B^N` consistency across predictor,
+Schur operator, and projection.  IB coupling currently belongs on the
+finest level only; coarser data is synchronized by average-down where
+covered.  Trilinos remains out of the build until the Tpetra wrapper is
+actually implemented (see `project_ib_matrixfree_plan.md`).

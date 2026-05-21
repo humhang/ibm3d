@@ -1,12 +1,13 @@
 ---
-name: Feedback — matrix-free is the agreed design for the IB Poisson
-description: Records a settled architectural decision after a multi-turn back-and-forth, so future agents don't re-litigate it.
+name: Feedback — matrix-free is the agreed design for the scalable IB Poisson
+description: Records a settled architectural decision after a multi-turn back-and-forth, so future agents don't re-litigate it when replacing the local IB prototype.
 type: feedback
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-**Rule**: for the Taira–Colonius IBPM modified-Poisson step, implement
-the operator `S = Q^T B^N Q` matrix-free as a `Tpetra::Operator`.  Do
-**not** assemble it as a `Tpetra::CrsMatrix` and hand to AMG.
+**Rule**: when replacing the current local coupled BiCGStab prototype,
+implement the Taira–Colonius IBPM operator `S = Q^T B^N Q` matrix-free
+as a `Tpetra::Operator`.  Do **not** assemble it as a
+`Tpetra::CrsMatrix` and hand to AMG.
 
 **Why**: settled with the user during the 2026-05-14 conversation
 after a tradeoff discussion covering:
@@ -25,9 +26,9 @@ recommendation in the follow-up.
 
 **How to apply**:
 
-- When the IB phase begins, build the operator as a `Tpetra::Operator`
-  subclass that calls AMReX-side `apply()` routines (spread, grad,
-  polynomial-in-L, divergence, interpolate).
+- When the scalable IB solve begins, build the operator as a
+  `Tpetra::Operator` subclass that calls AMReX-side `apply()` routines
+  (spread, grad, polynomial-in-L, divergence, interpolate).
 - Use Belos CG for the outer Krylov solve (system is SPD after the
   BN approximation).
 - Use AMReX `MLMG` wrapped as a `Tpetra::Operator` for the

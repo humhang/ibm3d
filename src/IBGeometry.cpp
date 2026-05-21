@@ -8,6 +8,7 @@
 #include "IBGeometry.H"
 
 #include <AMReX.H>
+#include <AMReX_Gpu.H>
 
 #include <algorithm>
 #include <array>
@@ -26,6 +27,18 @@ namespace {
 
 using Point = IBGeometry::Point;
 using Element = IBGeometry::Element;
+
+struct PointLess {
+  bool operator()(const Point &a, const Point &b) const noexcept {
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      if (a[d] < b[d])
+        return true;
+      if (b[d] < a[d])
+        return false;
+    }
+    return false;
+  }
+};
 
 void AbortGeometryRead(const std::string &path, const std::string &message) {
   amrex::Abort("IB geometry '" + path + "': " + message);
@@ -70,8 +83,9 @@ void CheckPositiveCount(const std::string &path, long long value,
 
 #elif (AMREX_SPACEDIM == 3)
 
-int AddPoint(IBGeometry &geometry, std::map<Point, int> &point_index,
-             const Point &point, const std::string &path) {
+int AddPoint(IBGeometry &geometry,
+             std::map<Point, int, PointLess> &point_index, const Point &point,
+             const std::string &path) {
   CheckFinite(path, point);
   if (const auto it = point_index.find(point); it != point_index.end())
     return it->second;
@@ -154,7 +168,8 @@ bool ReadBinaryTriangleCount(const std::string &path,
   return file_size == expected_size;
 }
 
-void AddSTLTriangle(IBGeometry &geometry, std::map<Point, int> &point_index,
+void AddSTLTriangle(IBGeometry &geometry,
+                    std::map<Point, int, PointLess> &point_index,
                     const std::array<Point, 3> &vertices,
                     const std::string &path) {
   Element triangle{};
@@ -179,7 +194,7 @@ IBGeometry LoadBinarySTL(const std::string &path,
     AbortGeometryRead(path, "could not read binary STL header");
 
   IBGeometry geometry;
-  std::map<Point, int> point_index;
+  std::map<Point, int, PointLess> point_index;
 
   std::array<unsigned char, 50> record{};
   for (std::uint32_t tri = 0; tri < triangle_count; ++tri) {
@@ -217,7 +232,7 @@ IBGeometry LoadAsciiSTL(const std::string &path) {
     AbortGeometryRead(path, "could not open file");
 
   IBGeometry geometry;
-  std::map<Point, int> point_index;
+  std::map<Point, int, PointLess> point_index;
 
   std::array<Point, 3> vertices{};
   int vertex_count = 0;
@@ -250,6 +265,64 @@ IBGeometry LoadAsciiSTL(const std::string &path) {
 #endif
 
 } // namespace
+
+void IBGeometry::BuildMarkers(const std::string &source_path) {
+  markers.clear();
+  markers.reserve(elements.size());
+
+  for (const auto &element : elements) {
+    IBMarker marker{};
+#if AMREX_SPACEDIM == 2
+    const auto &a = points[element[0]];
+    const auto &b = points[element[1]];
+    marker.x[0] = amrex::Real(0.5) * (a[0] + b[0]);
+    marker.x[1] = amrex::Real(0.5) * (a[1] + b[1]);
+    const amrex::Real dx0 = b[0] - a[0];
+    const amrex::Real dx1 = b[1] - a[1];
+    marker.weight = std::sqrt(dx0 * dx0 + dx1 * dx1);
+#else
+    const auto &a = points[element[0]];
+    const auto &b = points[element[1]];
+    const auto &c = points[element[2]];
+    for (int d = 0; d < AMREX_SPACEDIM; ++d)
+      marker.x[d] = (a[d] + b[d] + c[d]) / amrex::Real(3.0);
+    const amrex::Real ab0 = b[0] - a[0], ab1 = b[1] - a[1],
+                      ab2 = b[2] - a[2];
+    const amrex::Real ac0 = c[0] - a[0], ac1 = c[1] - a[1],
+                      ac2 = c[2] - a[2];
+    const amrex::Real cx = ab1 * ac2 - ab2 * ac1;
+    const amrex::Real cy = ab2 * ac0 - ab0 * ac2;
+    const amrex::Real cz = ab0 * ac1 - ab1 * ac0;
+    marker.weight =
+        amrex::Real(0.5) * std::sqrt(cx * cx + cy * cy + cz * cz);
+#endif
+    if (!(marker.weight > amrex::Real(0.0)) ||
+        !std::isfinite(marker.weight))
+      AbortGeometryRead(source_path, "geometry contains a degenerate element");
+    markers.push_back(marker);
+  }
+}
+
+void IBGeometry::UploadToDevice() {
+  device_points.resize(points.size());
+  device_elements.resize(elements.size());
+  device_markers.resize(markers.size());
+  amrex::Gpu::copy(amrex::Gpu::hostToDevice, points.begin(), points.end(),
+                   device_points.begin());
+  amrex::Gpu::copy(amrex::Gpu::hostToDevice, elements.begin(), elements.end(),
+                   device_elements.begin());
+  amrex::Gpu::copy(amrex::Gpu::hostToDevice, markers.begin(), markers.end(),
+                   device_markers.begin());
+}
+
+void IBGeometry::ClearDevice() {
+  device_points.clear();
+  device_elements.clear();
+  device_markers.clear();
+  device_points.shrink_to_fit();
+  device_elements.shrink_to_fit();
+  device_markers.shrink_to_fit();
+}
 
 #if (AMREX_SPACEDIM == 2)
 
@@ -317,10 +390,12 @@ IBGeometry LoadIBSurfaceSTL(const std::string &path) {
 
 IBGeometry LoadIBGeometry(const std::string &path) {
 #if (AMREX_SPACEDIM == 2)
-  return LoadIBCurveAscii(path);
+  auto geometry = LoadIBCurveAscii(path);
 #elif (AMREX_SPACEDIM == 3)
-  return LoadIBSurfaceSTL(path);
+  auto geometry = LoadIBSurfaceSTL(path);
 #endif
+  geometry.BuildMarkers(path);
+  return geometry;
 }
 
 } // namespace ibm3d

@@ -1,0 +1,16 @@
+solid ib_plane
+facet normal 0 0 1
+outer loop
+vertex 3.04 3.04 3.141592653589793
+vertex 3.24 3.04 3.141592653589793
+vertex 3.24 3.24 3.141592653589793
+endloop
+endfacet
+facet normal 0 0 1
+outer loop
+vertex 3.04 3.04 3.141592653589793
+vertex 3.24 3.24 3.141592653589793
+vertex 3.04 3.24 3.141592653589793
+endloop
+endfacet
+endsolid ib_plane
