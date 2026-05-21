@@ -50,9 +50,10 @@ Taira-Colonius Schur system
 
 and projects with `u^{n+1} = u* − dt B^N (G p + H f)`.  `H` spreads the
 IB force component-wise to the matching MAC face family, and `E`
-interpolates face velocity back to the same Lagrangian markers.  The
-current implementation uses one marker per immersed element centroid,
-with element length/area as its quadrature weight.
+interpolates face velocity back to the same Lagrangian markers with
+owner masks so shared patch faces are not double-counted.  The current
+implementation uses one marker per immersed element centroid, with
+element length/area as its quadrature weight.
 
 Why the modified Poisson `D B^N G` and not the standard `∇²` of a
 Chorin projection?  Perot 1997 shows that the exact block-LU
@@ -165,8 +166,8 @@ i j
 
 Connectivity may be zero-based or one-based and is stored internally as
 zero-based.  Every MPI rank holds the full Lagrangian geometry and force
-vector.  The interpolation operator uses AMReX owner masks so faces
-shared by two face-centred boxes are not counted twice.
+vector.  The interpolation operator uses `ParallelFor` and AMReX owner
+masks so faces shared by two face-centred boxes are not counted twice.
 
 ## Build / run
 

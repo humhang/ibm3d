@@ -236,9 +236,10 @@ Decisions baked into the current solver, with rationale:
     ASCII/binary STL surfaces, builds one marker per element centroid,
     stores host/device points/elements/markers as AMReX `GpuArray`
     records, and uploads device copies.  `INSSolver_IB.cpp` implements
-    Peskin 4-point `H/E`, owner-mask interpolation to avoid double-counted
-    shared faces, GPU-ready IB refinement tagging, and a finest-level
-    coupled BiCGStab solve for `[-D; E] B^N [G H] [p; f]`.  IB coupling is
+    Peskin 4-point `H/E` with `ParallelFor` kernels, owner-mask
+    interpolation plus atomics to avoid double-counted shared faces,
+    GPU-ready IB refinement tagging, and a finest-level coupled BiCGStab
+    solve for `[-D; E] B^N [G H] [p; f]`.  IB coupling is
     applied only on the finest AMR level; coarser data is overwritten by
     average-down where covered.  The supplied IB smoke cases are:
     `tests/ib_plane`, `tests/ib_plane_amr`, and

@@ -10,6 +10,7 @@
 #include "INSSolver.H"
 
 #include <AMReX_Gpu.H>
+#include <AMReX_GpuAtomic.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
@@ -176,6 +177,13 @@ void INSSolver::InterpolateIBVelocity(
   if (!m_ib_enabled || markers.empty())
     return;
 
+  const auto *markers_p = m_ib_geometry.device_markers.data();
+  const int nmarkers = static_cast<int>(markers.size());
+  Gpu::DeviceVector<Real> marker_vel_device(marker_vel.size());
+  Gpu::copy(Gpu::hostToDevice, marker_vel.begin(), marker_vel.end(),
+            marker_vel_device.begin());
+  Real *marker_vel_p = marker_vel_device.data();
+
   const Geometry &gm = geom[lev];
   const auto dx = gm.CellSizeArray();
   const auto plo = gm.ProbLoArray();
@@ -193,25 +201,32 @@ void INSSolver::InterpolateIBVelocity(
     const MultiFab &mf = *vel[dir];
     const auto owner = mf.OwnerMask(gm.periodicity());
 
-    for (MFIter mfi(mf); mfi.isValid(); ++mfi) {
-      const Box &bx = mfi.validbox();
+    for (MFIter mfi(mf, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+      const Box &bx = mfi.tilebox();
       auto const &u = mf.const_array(mfi);
       auto const &mask = owner->const_array(mfi);
-      amrex::LoopOnCpu(bx, [&](int i, int j, int k) {
-        if (mask(i, j, k) == 0)
-          return;
-        const auto x = face_position(dir, i, j, k, plo, dx);
-        for (std::size_t marker = 0; marker < markers.size(); ++marker) {
-          const Real delta =
-              ib_delta(x, markers[marker], dx, prob_len, periodic);
-          if (delta != 0.0_rt) {
-            marker_vel[marker * AMREX_SPACEDIM + dir] +=
-                u(i, j, k) * delta * dv;
-          }
-        }
-      });
+      amrex::ParallelFor(
+          bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+            if (mask(i, j, k) == 0)
+              return;
+            const auto x = face_position(dir, i, j, k, plo, dx);
+            for (int marker = 0; marker < nmarkers; ++marker) {
+              const Real delta =
+                  ib_delta(x, markers_p[marker], dx, prob_len, periodic);
+              if (delta != 0.0_rt) {
+                HostDevice::Atomic::Add(
+                    &marker_vel_p[marker * AMREX_SPACEDIM + dir],
+                    u(i, j, k) * delta * dv);
+              }
+            }
+          });
     }
+    Gpu::streamSynchronize();
   }
+
+  Gpu::copy(Gpu::deviceToHost, marker_vel_device.begin(),
+            marker_vel_device.end(), marker_vel.begin());
+  Gpu::streamSynchronize();
 
   if (!marker_vel.empty()) {
     ParallelDescriptor::ReduceRealSum(marker_vel.data(),

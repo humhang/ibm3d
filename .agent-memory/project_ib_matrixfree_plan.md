@@ -62,10 +62,10 @@ roughly the equivalent stack.
 **Current status note (2026-05-20)**: the first IB projection pass is
 implemented without Trilinos in `INSSolver_IB.cpp`: `IBGeometry` owns
 GPU-friendly host/device points, elements, and markers; `H/E` use a
-Peskin 4-point kernel; `ErrorEst` tags marker neighborhoods; and
-`ProjectPerot` calls the local coupled BiCGStab on the finest level.
-The items below apply when replacing that local coupled solve with the
-planned Tpetra/Belos wrapper.
+Peskin 4-point kernel with GPU `ParallelFor` kernels; `ErrorEst` tags
+marker neighborhoods; and `ProjectPerot` calls the local coupled
+BiCGStab on the finest level.  The items below apply when replacing
+that local coupled solve with the planned Tpetra/Belos wrapper.
 
 **What to bring back into the build when implementing the Tpetra path**:
 

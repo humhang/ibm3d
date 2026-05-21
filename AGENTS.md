@@ -30,8 +30,8 @@ Key decisions already settled, do not re-litigate:
 - **IB discretisation (current first pass)**: one Lagrangian marker at
   each line-segment/triangle centroid, element length/area as the
   quadrature weight, Peskin 4-point delta, component-wise MAC spreading
-  (`f_x` to x-faces, etc.), and owner-mask interpolation so shared patch
-  faces are not double-counted.  Geometry and force vectors are
+  (`f_x` to x-faces, etc.), and `ParallelFor` owner-mask interpolation
+  so shared patch faces are not double-counted.  Geometry and force vectors are
   replicated on every MPI rank.  IB coupling is applied only on the
   finest level; `ErrorEst` tags a configurable neighborhood of the
   markers so AMR keeps the body on the finest mesh.

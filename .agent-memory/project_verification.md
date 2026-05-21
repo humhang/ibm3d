@@ -63,17 +63,17 @@ the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
 
 - `tests/ib_plane/inputs.ib_plane` — single-level two-triangle STL
   plane in the Taylor–Green field.  One step gives
-  `|E u - U_ib|_inf ≈ 9.3e-11`, `|div u|_inf ≈ 3e-12`.
+  `|E u - U_ib|_inf ≈ 2.0e-10`, `|div u|_inf ≈ 6.6e-12`.
 - `tests/ib_plane_amr/inputs.ib_plane_amr` — same geometry with one
   refinement level.  Vorticity tags plus IB tags keep the body on the
-  finest mesh.  One step gives `|E u - U_ib|_inf ≈ 2.2e-10`,
-  `|div u|_inf ≈ 2.3e-11`.
+  finest mesh.  One step gives `|E u - U_ib|_inf ≈ 2.1e-10`,
+  `|div u|_inf ≈ 2.7e-11`.
 - `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` — channel
   flow past a stationary radius-0.125 cylinder, with STL panel sizes
   near `1.5 * dx` for the current unpreconditioned coupled solver.
   One step gives roughly 200 IB BiCGStab iterations at `1e-4`
   relative residual, `|E u - U_ib|_inf ≈ 2e-3`, and
-  `|div u|_inf ≈ 1e-4`.
+  `|div u|_inf ≈ 1.5e-4`.
 
 **Takeaway:** discretisation is correct at its design rate
 (2nd/2nd).  When verifying any time-stepping change, run the
