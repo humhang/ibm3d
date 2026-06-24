@@ -14,6 +14,10 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
 endif()
 
+# if MPI is a wrapper and you have HIP/CUDA enabled,
+# the HIP/CUDA compiler also need to be a MPI wrapper!
+# this is because target MPI::MPI_CXX is empty when MPI is a compiler wrapper,
+# and no flag will be added to HIP/CUDA compiler.
 find_package(MPI REQUIRED)
 find_package(AMReX REQUIRED)
 
@@ -97,19 +101,5 @@ elseif(NOT AMReX_GPU_BACKEND STREQUAL "NONE")
 else()
 endif()
 
-# if the MPI is a compiler wrapper, target MPI::MPI_CXX is empty, per CMake behavior,
-# thus no additional MPI flags will be added if you link against MPI::MPI_CXX'.
-# Not an issue for pure CXX code since the compiler is the wrapper.
-# Won't work for CUDA/HIP, unless CUDA/HIP compilers are also MPI wrapper (for example Cray-CC in Frontier).
-# For safe: don't use MPI::MPI_CXX, we create out own interface target.
-add_library(ibm3d_mpi INTERFACE)
-target_include_directories(ibm3d_mpi SYSTEM INTERFACE ${MPI_CXX_INCLUDE_DIRS})
-target_compile_definitions(ibm3d_mpi INTERFACE ${MPI_CXX_COMPILE_DEFINITIONS})
-target_compile_options(ibm3d_mpi INTERFACE "$<$<COMPILE_LANGUAGE:CXX>:${MPI_CXX_COMPILE_OPTIONS}>")
-target_link_libraries(ibm3d_mpi INTERFACE ${MPI_CXX_LIBRARIES})
-if(MPI_CXX_LINK_FLAGS)
-  separate_arguments(_mpi_cxx_link_options NATIVE_COMMAND "${MPI_CXX_LINK_FLAGS}")
-  target_link_options(ibm3d_mpi INTERFACE ${_mpi_cxx_link_options})
-endif()
 
 add_subdirectory(src)
