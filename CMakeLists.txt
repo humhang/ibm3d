@@ -24,8 +24,10 @@ message(STATUS "AMReX_SIMD:          ${AMReX_SIMD}")
 message(STATUS "AMReX_OMP:           ${AMReX_OMP}")
 message(STATUS "AMReX_GPU_BACKEND:   ${AMReX_GPU_BACKEND}")
 
-# lto not compatible with cuda pipeline.
-# I think one can enable lto only to host compiler, but for now just disable it.
+# LTO not compatible with CUDA pipeline, not sure about HIP/SYCL
+# You can use LTO flags for pure host translation units with host compilers.
+# But not for translation units with device codes, you can't forward LTO flags to host compilers.
+# For this project: all sources are device codes if GPU enabled.
 if("${CMAKE_BUILD_TYPE}" STREQUAL "Release"
    AND AMReX_GPU_BACKEND STREQUAL "NONE")
   include(CheckIPOSupported)
@@ -37,6 +39,21 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Release"
     message(STATUS "IPO not supported: ${ipo_output}")
   endif()
 endif()
+
+# you could accidently inherit flto flags from TPL, e.g., MPI from RHEL repo
+# Need to disable it
+# There should be better solution
+if(NOT AMReX_GPU_BACKEND STREQUAL "NONE")
+  add_compile_options($<$<CXX_COMPILER_ID:GNU>:-fno-lto>)
+  add_link_options($<$<CXX_COMPILER_ID:GNU>:-fno-lto>)
+endif()
+
+# If you really want LTO for both host/device, you should do the 4 steps
+# 1. g++ -flto for .cpp
+# 2. nvcc -dlto for .cu.
+#     Note: -Xcompiler -flto NOT ALLOWED. Host code inside .cu can't do LTO
+# 3. nvcc -dlto linking device
+# 4. g++ -flto for final linkage
 
 # Trilinos will be re-introduced when the immersed-boundary projection is added
 # (it is needed for the Taira–Colonius saddle-point operator).  The pure
@@ -78,7 +95,21 @@ elseif(NOT AMReX_GPU_BACKEND STREQUAL "NONE")
   message(FATAL_ERROR "Unsupported AMReX GPU backend: "
         "'${AMReX_GPU_BACKEND}'")
 else()
+endif()
 
+# if the MPI is a compiler wrapper, target MPI::MPI_CXX is empty, per CMake behavior,
+# thus no additional MPI flags will be added if you link against MPI::MPI_CXX'.
+# Not an issue for pure CXX code since the compiler is the wrapper.
+# Won't work for CUDA/HIP, unless CUDA/HIP compilers are also MPI wrapper (for example Cray-CC in Frontier).
+# For safe: don't use MPI::MPI_CXX, we create out own interface target.
+add_library(ibm3d_mpi INTERFACE)
+target_include_directories(ibm3d_mpi SYSTEM INTERFACE ${MPI_CXX_INCLUDE_DIRS})
+target_compile_definitions(ibm3d_mpi INTERFACE ${MPI_CXX_COMPILE_DEFINITIONS})
+target_compile_options(ibm3d_mpi INTERFACE "$<$<COMPILE_LANGUAGE:CXX>:${MPI_CXX_COMPILE_OPTIONS}>")
+target_link_libraries(ibm3d_mpi INTERFACE ${MPI_CXX_LIBRARIES})
+if(MPI_CXX_LINK_FLAGS)
+  separate_arguments(_mpi_cxx_link_options NATIVE_COMMAND "${MPI_CXX_LINK_FLAGS}")
+  target_link_options(ibm3d_mpi INTERFACE ${_mpi_cxx_link_options})
 endif()
 
 add_subdirectory(src)
