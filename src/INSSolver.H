@@ -23,12 +23,15 @@
 /// Algorithm (per time step, single-level proper; multi-level
 /// approximated by per-level Perot solves + average-down sync)
 /// ------------------------------------------------------------
-///   ε = ν dt / 2,  B^N = Σ_{k=0}^N (εL)^k   (truncated Neumann series for A^{−1})
+///   ε = ν dt / 2,  B^N = Σ_{k=0}^N (εL)^k   (truncated Neumann series for
+///   A^{−1})
 ///
 ///   1.  A^n  = -(u^n · ∇) u^n                          (explicit, centred)
-///   2.  r1   = (I + εL) u^n + dt A^n                   (NO pressure gradient — Perot)
+///   2.  r1   = (I + εL) u^n + dt A^n                   (NO pressure gradient —
+///   Perot)
 ///   3.  u*   = B^N r1                                   (predictor)
-///   4.  Solve  (D B^N G) p^{n+1} = (1/dt) D u*          (modified Poisson, matrix-free Krylov)
+///   4.  Solve  (D B^N G) p^{n+1} = (1/dt) D u*          (modified Poisson,
+///   matrix-free Krylov)
 ///   5.  u^{n+1} = u* − dt B^N G p^{n+1}                  (Perot projection)
 ///   6.  Average u^{n+1} and p^{n+1} fine→coarse on overlapping faces / cells.
 ///
@@ -152,10 +155,11 @@ private:
   std::array<amrex::Vector<amrex::BCRec>, AMREX_SPACEDIM> m_bc_vel;
   amrex::Vector<amrex::BCRec> m_bc_pres;
 
+public:
   // ---------------- Helpers ----------------
   void ReadParameters();
-  void ParseBCs();      ///< read ins.bc_* / ins.vel_* and validate
-  void BuildBCRecs();   ///< translate BCKind → AMReX BCRec for FillPatch
+  void ParseBCs();    ///< read ins.bc_* / ins.vel_* and validate
+  void BuildBCRecs(); ///< translate BCKind → AMReX BCRec for FillPatch
   void AllocateLevelStorage(int lev, const amrex::BoxArray &ba,
                             const amrex::DistributionMapping &dm);
   void InitFlowField(int lev);
@@ -178,8 +182,9 @@ private:
   /// Re-impose the prescribed wall velocity on a velocity field
   /// after the predictor / projection (the linear operators do not
   /// preserve inhomogeneous Dirichlet data exactly).
-  void EnforceVelDirichlet(
-      int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &vel);
+  void
+  EnforceVelDirichlet(int lev,
+                      const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &vel);
 
   void ComputeDt();
   void Advance();
@@ -225,8 +230,7 @@ private:
   void ProjectPerot();
 
   // FillPatch helpers
-  void FillFacePatch(int lev, int dir,
-                     amrex::Vector<FaceMFArray> &source,
+  void FillFacePatch(int lev, int dir, amrex::Vector<FaceMFArray> &source,
                      amrex::MultiFab &dst, amrex::Real time);
   void FillCellPatch(int lev,
                      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &source,
@@ -248,8 +252,8 @@ private:
   /// Discrete L2 and L∞ error of the level-0 face velocities against
   /// the exact 2D Taylor–Green vortex at `time` (analytic
   /// verification; the caller restricts this to the tg2d case).
-  void ComputeTG2DError(amrex::Real time, amrex::Real &l2, amrex::Real &linf)
-      const;
+  void ComputeTG2DError(amrex::Real time, amrex::Real &l2,
+                        amrex::Real &linf) const;
 
   /// Print the tg2d analytic error and, if ins.tg2d_dump/tg2d_cmp are
   /// set, write/compare the final level-0 cell-centred velocity for a

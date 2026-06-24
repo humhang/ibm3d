@@ -91,9 +91,7 @@ Key decisions already settled, do not re-litigate:
 ## Agent memory
 
 In-repo at `.agent-memory/` (committed; see `MEMORY.md` there for the
-one-line index).  Claude Code auto-loads `CLAUDE.md` at the repo root,
-which `@`-imports the memory index, so there is no per-machine
-bootstrap to run.
+one-line index).  
 
 ## Build / run
 

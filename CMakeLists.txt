@@ -6,34 +6,37 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-    set(CMAKE_INSTALL_PREFIX ${PROJECT_SOURCE_DIR} CACHE PATH "Installing prefix of the project" FORCE)
+  set(CMAKE_INSTALL_PREFIX ${PROJECT_SOURCE_DIR} CACHE PATH "Installing prefix of the project" FORCE)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE)
-    message(STATUS "No build type selected, default to Release")
-    set(CMAKE_BUILD_TYPE "Release")
-endif()
-
-if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT ipo_result OUTPUT ipo_output)
-    if(ipo_result)
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
-        message(STATUS "IPO enabled")
-    else()
-        message(STATUS "IPO not supported: ${ipo_output}")
-    endif()
+  message(STATUS "No build type selected, default to Release")
+  set(CMAKE_BUILD_TYPE "Release")
 endif()
 
 find_package(MPI REQUIRED)
 find_package(AMReX REQUIRED)
 
 if(NOT AMReX_MPI)
-    message(FATAL_ERROR "AMReX must be built with MPI support")
+  message(FATAL_ERROR "AMReX must be built with MPI support")
 endif()
 message(STATUS "AMReX_SIMD:          ${AMReX_SIMD}")
 message(STATUS "AMReX_OMP:           ${AMReX_OMP}")
 message(STATUS "AMReX_GPU_BACKEND:   ${AMReX_GPU_BACKEND}")
+
+# lto not compatible with cuda pipeline.
+# I think one can enable lto only to host compiler, but for now just disable it.
+if("${CMAKE_BUILD_TYPE}" STREQUAL "Release"
+   AND AMReX_GPU_BACKEND STREQUAL "NONE")
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT ipo_result OUTPUT ipo_output)
+  if(ipo_result)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    message(STATUS "IPO enabled")
+  else()
+    message(STATUS "IPO not supported: ${ipo_output}")
+  endif()
+endif()
 
 # Trilinos will be re-introduced when the immersed-boundary projection is added
 # (it is needed for the Taira–Colonius saddle-point operator).  The pure
@@ -41,9 +44,41 @@ message(STATUS "AMReX_GPU_BACKEND:   ${AMReX_GPU_BACKEND}")
 # modified-Poisson Krylov solve.
 
 if(AMReX_GPU_BACKEND STREQUAL "CUDA")
-    enable_language(CUDA)
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 20)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  set(CMAKE_CUDA_EXTENSIONS OFF)
 elseif(AMReX_GPU_BACKEND STREQUAL "HIP")
-    enable_language(HIP)
+  enable_language(HIP)
+  set(CMAKE_HIP_STANDARD 20)
+  set(CMAKE_HIP_STANDARD_REQUIRED ON)
+  set(CMAKE_HIP_EXTENSIONS OFF)
+  # These package below provide targets which are interfacial dependencies of amrex target,
+  # I don't use it explicitly amrex config should call find_dependency, instead of me calling find_package here!
+  # I submitted a ticket, once they fix it remove these
+  find_package(hip REQUIRED CONFIG)
+  find_package(hiprand REQUIRED CONFIG)
+  find_package(rocrand REQUIRED CONFIG)
+  find_package(rocprim REQUIRED CONFIG)
+  find_package(rocsparse REQUIRED CONFIG)
+elseif(AMReX_GPU_BACKEND STREQUAL "SYCL")
+  # make sure the cxx compiler is a sycl compiler...
+  # enumerate and match, although there may be better solution?
+  set(_sycl_compiler_ids
+      Clang IntelClang IntelDPCPP IntelLLVM)
+  if (NOT CMAKE_CXX_COMPILER_ID IN_LIST _sycl_compiler_ids)
+    message(FATAL_ERROR
+              "AMReX was built with SYCL, but CMAKE_CXX_COMPILER is "
+              "'${CMAKE_CXX_COMPILER}' (${CMAKE_CXX_COMPILER_ID}). "
+              "Are you sure this is a SYCL compiler? "
+              "Perhaps you need to reconfigure with the Intel oneAPI compiler, typically icpx.")
+  endif()
+  unset(_sycl_compiler_ids)
+elseif(NOT AMReX_GPU_BACKEND STREQUAL "NONE")
+  message(FATAL_ERROR "Unsupported AMReX GPU backend: "
+        "'${AMReX_GPU_BACKEND}'")
+else()
+
 endif()
 
 add_subdirectory(src)
