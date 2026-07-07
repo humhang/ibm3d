@@ -24,6 +24,6 @@ endif()
 target_include_directories(ins_solver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ins_solver PRIVATE
         MPI::MPI_CXX
-        AMReX::amrex)
+        AMReX::amrex_3d)
 
 install(TARGETS ins_solver RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

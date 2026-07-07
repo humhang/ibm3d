@@ -1,8 +1,8 @@
 #ifndef IB_GEOMETRY_H
 #define IB_GEOMETRY_H
 
-#include <AMReX_Array.H>
 #include <AMReX_Config.H>
+#include <AMReX_Array.H>
 #include <AMReX_GpuContainers.H>
 #include <AMReX_REAL.H>
 
