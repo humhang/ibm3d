@@ -1,0 +1,54 @@
+# ============================================================
+# inputs.ib_cylinder_re100 — 2D flow past a stationary cylinder
+#
+# Canonical uniform-inflow IB case:
+#   Re_D = U_inf D / nu = 1 * 1 / 0.01 = 100
+#   cylinder center = (2, 0), diameter D = 1
+#   dx = 0.05
+#   finest resolution D / dx = 20 on the single level
+#   IB segment chord ~= 0.1305 = 2.61 finest cells
+#
+# Regenerate the curve with:
+#   python3 tests/2d/ib_cylinder_re100/generate_cylinder_curve.py
+#
+# Run from the repository root:
+#   ./build-release/src/ins_solver_2d tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  0.0  -2.0
+geometry.prob_hi     =  8.0   2.0
+geometry.is_periodic =  0  0
+
+# ---- Grid ----
+amr.n_cell           =  160  80
+amr.max_level        =  0
+amr.blocking_factor  =  4
+amr.max_grid_size    =  32
+amr.v                =  1
+
+# ---- Boundary conditions ----
+ins.bc_xlo = inflow
+ins.bc_xhi = outflow
+ins.bc_ylo = slip
+ins.bc_yhi = slip
+
+ins.vel_xlo = 1.0 0.0
+
+# ---- Solver ----
+ins.ic               =  quiescent
+ins.nu               =  1.0e-2
+ins.cfl              =  0.4
+ins.t_stop           =  20.0
+ins.max_step         =  5000
+ins.plot_int         =  100
+ins.cn_order         =  2
+ins.poisson_tol      =  1.0e-5
+ins.poisson_max_iter =  4000
+ins.verbose          =  2
+ins.plot_prefix      =  plt_ib_cylinder_re100_2d
+
+# ---- Immersed boundary ----
+ib.geometry          =  tests/2d/ib_cylinder_re100/cylinder.curve
+ib.velocity          =  0.0  0.0
+ib.refine_radius     =  8.0

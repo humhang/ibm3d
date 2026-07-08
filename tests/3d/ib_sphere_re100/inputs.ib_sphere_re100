@@ -1,0 +1,56 @@
+# ============================================================
+# inputs.ib_sphere_re100 — 3D flow past a stationary sphere
+#
+# Canonical uniform-inflow IB case:
+#   Re_D = U_inf D / nu = 1 * 1 / 0.01 = 100
+#   sphere center = (1.5, 0, 0), diameter D = 1
+#   dx = 0.05
+#   finest resolution D / dx = 20 on the single level
+#   STL panel length is about 0.2588 = 5.18 finest cells near the equator
+#
+# Regenerate the STL with:
+#   python3 tests/3d/ib_sphere_re100/generate_sphere_stl.py
+#
+# Run from the repository root:
+#   ./build-release/src/ins_solver tests/3d/ib_sphere_re100/inputs.ib_sphere_re100
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  0.0  -1.2  -1.2
+geometry.prob_hi     =  4.8   1.2   1.2
+geometry.is_periodic =  0  0  0
+
+# ---- Grid ----
+amr.n_cell           =  96  48  48
+amr.max_level        =  0
+amr.blocking_factor  =  4
+amr.max_grid_size    =  32
+amr.v                =  1
+
+# ---- Boundary conditions ----
+ins.bc_xlo = inflow
+ins.bc_xhi = outflow
+ins.bc_ylo = slip
+ins.bc_yhi = slip
+ins.bc_zlo = slip
+ins.bc_zhi = slip
+
+ins.vel_xlo = 1.0 0.0 0.0
+
+# ---- Solver ----
+ins.ic               =  quiescent
+ins.nu               =  1.0e-2
+ins.cfl              =  0.4
+ins.t_stop           =  20.0
+ins.max_step         =  5000
+ins.plot_int         =  100
+ins.cn_order         =  2
+ins.poisson_tol      =  1.0e-4
+ins.poisson_max_iter =  4000
+ins.verbose          =  2
+ins.plot_prefix      =  plt_ib_sphere_re100_3d
+
+# ---- Immersed boundary ----
+ib.geometry          =  tests/3d/ib_sphere_re100/sphere.stl
+ib.velocity          =  0.0  0.0  0.0
+ib.refine_radius     =  8.0

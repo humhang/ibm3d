@@ -200,6 +200,7 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 | `tests/2d/tg2d_amr/inputs.tg2d_amr` | Native 2D Taylor–Green AMR case for `ins_solver_2d`. |
 | `tests/2d/ib_square/inputs.ib_square` | Native 2D coupled IB projection smoke test for `ins_solver_2d`. |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR for `ins_solver_2d`. |
+| `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D uniform flow past a stationary cylinder, `Re_D=100`, finest `D/dx=20`. |
 | `tests/3d/tg/inputs.tg` | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100. |
 | `tests/3d/tg_amr/inputs.tg_amr` | 32³ base + 1 refinement level (2× ratio), vorticity tagging. |
 | `tests/3d/tg2d/inputs.tg2d` | Thin-periodic-z Taylor–Green analytic case for the 3D executable. |
@@ -209,6 +210,7 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 | `tests/3d/ib_plane/inputs.ib_plane` | Single-level coupled IB projection smoke test with `ib_plane.stl`. |
 | `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection smoke test with AMR and `ib_plane.stl`. |
 | `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Channel past a stationary cylindrical IB surface; coarse `1.5dx` STL smoke case. |
+| `tests/3d/ib_sphere_re100/inputs.ib_sphere_re100` | 3D uniform flow past a stationary sphere, `Re_D=100`, finest `D/dx=20`. |
 
 The Taylor–Green cases decay monotonically from the analytical IC;
 at convergence `|div u|_∞ ~ 10⁻¹¹` per step (Krylov tolerance

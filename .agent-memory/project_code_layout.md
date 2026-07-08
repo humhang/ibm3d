@@ -28,6 +28,7 @@ Top-level files:
 | `tests/2d/tg2d_amr/inputs.tg2d_amr`    | Native 2D Taylor–Green AMR case.                                           |
 | `tests/2d/ib_square/inputs.ib_square`  | Native 2D coupled IB projection smoke case with local curve.               |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection AMR smoke case.                     |
+| `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D flow past a stationary cylinder, Re_D=100, finest D/dx=20.    |
 | `tests/3d/tg/inputs.tg`                | Single-level Taylor–Green test (`max_level=0`, 32³).                       |
 | `tests/3d/tg_amr/inputs.tg_amr`        | 2-level AMR Taylor–Green test (`max_level=1`, vorticity tagging).          |
 | `tests/3d/tg2d/inputs.tg2d`            | Thin-periodic-z Taylor–Green analytic/self-convergence case.               |
@@ -37,6 +38,7 @@ Top-level files:
 | `tests/3d/ib_plane/inputs.ib_plane`    | Single-level coupled IB projection smoke case with local STL.              |
 | `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection AMR smoke case with local STL.      |
 | `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel past a stationary cylindrical IB surface; STL generated locally. |
+| `tests/3d/ib_sphere_re100/inputs.ib_sphere_re100` | 3D flow past a stationary sphere, Re_D=100, finest D/dx=20; STL generated locally. |
 | `AGENTS.md`            | Coding-style + Zed-task documentation.                                     |
 | `.clang-format`        | `BasedOnStyle: LLVM`, `Standard: c++20`.                                   |
 | `.zed/tasks.json`      | Configure/build/clean/run/debug tasks pinning AMReX_DIR.                   |
