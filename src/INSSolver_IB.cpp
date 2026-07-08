@@ -311,6 +311,7 @@ int INSSolver::SolveIBProjection(int lev, MultiFab &p, const MultiFab &rhs_p_in,
   MultiFab s_p(ba, dm, 1, 1), t_p(ba, dm, 1, 0);
   MultiFab Ax_p(ba, dm, 1, 0);
   pv_p.setVal(0.0);
+  v_p.setVal(0.0);
   s_p.setVal(0.0);
 
   std::vector<Real> Ax_ib(rhs_ib.size(), 0.0);
