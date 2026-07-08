@@ -213,16 +213,12 @@ void INSSolver::ComputeDt() {
 void INSSolver::MakeNewLevelFromScratch(int lev, Real /*time*/,
                                         const BoxArray &ba,
                                         const DistributionMapping &dm) {
-  SetBoxArray(lev, ba);
-  SetDistributionMap(lev, dm);
   AllocateLevelStorage(lev, ba, dm);
   InitFlowField(lev);
 }
 
 void INSSolver::MakeNewLevelFromCoarse(int lev, Real time, const BoxArray &ba,
                                        const DistributionMapping &dm) {
-  SetBoxArray(lev, ba);
-  SetDistributionMap(lev, dm);
   AllocateLevelStorage(lev, ba, dm);
 
   PhysBCFunctNoOp bc_func;
@@ -250,8 +246,6 @@ void INSSolver::RemakeLevel(int lev, Real time, const BoxArray &ba,
     old_vel[d] = std::move(m_vel[lev][d]);
   std::unique_ptr<MultiFab> old_pres = std::move(m_pressure[lev]);
 
-  SetBoxArray(lev, ba);
-  SetDistributionMap(lev, dm);
   AllocateLevelStorage(lev, ba, dm);
 
   PhysBCFunctNoOp bc_func;
@@ -683,7 +677,6 @@ void INSSolver::ErrorEst(int lev, TagBoxArray &tags, Real /*time*/,
     ComputeCellCenteredVorticityMag(lev, vortmag);
 
     const Real thr = m_refine_vort;
-    const char tagval = TagBox::SET;
 
     for (MFIter mfi(vortmag, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
       const Box &bx = mfi.tilebox();
@@ -692,7 +685,7 @@ void INSSolver::ErrorEst(int lev, TagBoxArray &tags, Real /*time*/,
       amrex::ParallelFor(bx,
                          [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
                            if (om(i, j, k) > thr)
-                             tag(i, j, k) = tagval;
+                             tag(i, j, k) = TagBox::SET;
                          });
     }
   }

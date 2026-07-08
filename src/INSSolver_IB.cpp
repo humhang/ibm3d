@@ -424,7 +424,6 @@ void INSSolver::AddIBTags(int lev, TagBoxArray &tags) const {
   const Real radius2 = radius * radius;
   const auto *markers = m_ib_geometry.device_markers.data();
   const int nmarkers = static_cast<int>(m_ib_geometry.markers.size());
-  const char tagval = TagBox::SET;
 
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
@@ -448,7 +447,7 @@ void INSSolver::AddIBTags(int lev, TagBoxArray &tags) const {
               dist2 += r * r;
             }
             if (dist2 <= radius2) {
-              tag(i, j, k) = tagval;
+              tag(i, j, k) = TagBox::SET;
               break;
             }
           }
