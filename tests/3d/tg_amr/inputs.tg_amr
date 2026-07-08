@@ -11,7 +11,7 @@
 # of that range.
 #
 # Run with:
-#   ./build-release/src/ins_solver inputs.tg_amr
+#   ./build-release/src/ins_solver tests/3d/tg_amr/inputs.tg_amr
 # ============================================================
 
 # ---- Domain ----

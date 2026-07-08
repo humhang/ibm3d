@@ -17,22 +17,26 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 | `INSSolver_Project.cpp`  | `ApplyModifiedPoissonOp` (−D B^N G), `SolveModifiedPoisson` (pressure-only BiCGStab), `ProjectPerot` (pressure-only projection or finest-level coupled IB projection). |
 | `INSSolver_IB.cpp`       | IB geometry initialization, Peskin 4-point `H/E`, finest-level IB tagging, coupled BiCGStab on `[-D;E]B^N[G H]`. |
 | `IBGeometry.H/.cpp`      | Dimension-selected host loaders plus marker construction and device copies for IB geometry: 2D ASCII line-segment curves, 3D ASCII/binary STL triangle surfaces with exact coordinate de-duplication into indexed connectivity. |
-| `CMakeLists.txt`         | Executable `ins_solver`, links MPI + AMReX (Trilinos not currently needed). |
+| `CMakeLists.txt`         | Executables `ins_solver` and `ins_solver_2d`, link MPI + AMReX (Trilinos not currently needed). |
 
 Top-level files:
 
 | File                   | Role                                                                       |
 |------------------------|----------------------------------------------------------------------------|
 | `CMakeLists.txt`       | `find_package(MPI)`, `find_package(AMReX)`, sets C++20.                    |
-| `tests/tg/inputs.tg`                   | Single-level Taylor–Green test (`max_level=0`, 32³).                       |
-| `tests/tg_amr/inputs.tg_amr`           | 2-level AMR Taylor–Green test (`max_level=1`, vorticity tagging).          |
-| `tests/tg2d/inputs.tg2d`               | 2D Taylor–Green analytic/self-convergence case.                            |
-| `tests/lid/inputs.lid`                 | Lid-driven cavity (all-Dirichlet, singular pressure, `ic=quiescent`).      |
-| `tests/lid_amr/inputs.lid_amr`         | AMR lid-driven cavity.                                                     |
-| `tests/channel/inputs.channel`         | Inflow/outflow channel (non-singular pressure).                            |
-| `tests/ib_plane/inputs.ib_plane`       | Single-level coupled IB projection smoke case with local STL.              |
-| `tests/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection AMR smoke case with local STL.        |
-| `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel past a stationary cylindrical IB surface; STL generated locally. |
+| `tests/2d/tg2d/inputs.tg2d`            | Native 2D Taylor–Green analytic/self-convergence case.                     |
+| `tests/2d/tg2d_amr/inputs.tg2d_amr`    | Native 2D Taylor–Green AMR case.                                           |
+| `tests/2d/ib_square/inputs.ib_square`  | Native 2D coupled IB projection smoke case with local curve.               |
+| `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection AMR smoke case.                     |
+| `tests/3d/tg/inputs.tg`                | Single-level Taylor–Green test (`max_level=0`, 32³).                       |
+| `tests/3d/tg_amr/inputs.tg_amr`        | 2-level AMR Taylor–Green test (`max_level=1`, vorticity tagging).          |
+| `tests/3d/tg2d/inputs.tg2d`            | Thin-periodic-z Taylor–Green analytic/self-convergence case.               |
+| `tests/3d/lid/inputs.lid`              | Lid-driven cavity (all-Dirichlet, singular pressure, `ic=quiescent`).      |
+| `tests/3d/lid_amr/inputs.lid_amr`      | AMR lid-driven cavity.                                                     |
+| `tests/3d/channel/inputs.channel`      | Inflow/outflow channel (non-singular pressure).                            |
+| `tests/3d/ib_plane/inputs.ib_plane`    | Single-level coupled IB projection smoke case with local STL.              |
+| `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection AMR smoke case with local STL.      |
+| `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel past a stationary cylindrical IB surface; STL generated locally. |
 | `AGENTS.md`            | Coding-style + Zed-task documentation.                                     |
 | `.clang-format`        | `BasedOnStyle: LLVM`, `Standard: c++20`.                                   |
 | `.zed/tasks.json`      | Configure/build/clean/run/debug tasks pinning AMReX_DIR.                   |

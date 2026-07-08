@@ -115,7 +115,7 @@ From the command palette: **`task: spawn`** → pick:
 | `Clean: Debug build` / Release           | `cmake --build … --target clean`                    |
 | `Clean: Rebuild Debug` / Release         | Wipe build tree, reconfigure, rebuild               |
 | `Clean: Wipe everything`                 | Remove both build trees and `compile_commands.json` |
-| `Run: ins_solver …`                      | Serial run with a selected `tests/<case>/inputs.*`  |
+| `Run: ins_solver …`                      | Serial run with a selected `tests/{2d,3d}/<case>/inputs.*` |
 | `Run: ins_solver MPI (…, 4 ranks)`       | `mpirun -np 4` run with a selected test input       |
 
 The configure tasks pass `-DAMReX_DIR=/Users/hang/opt/amrex-26.01/install/lib/cmake/AMReX`.
@@ -133,7 +133,7 @@ what `clangd` reads.
 ## Debugging
 
 `.zed/debug.json` defines two CodeLLDB configurations: launch
-`build-debug/src/ins_solver tests/tg/inputs.tg` (with a pre-launch build), and
+`build-debug/src/ins_solver tests/3d/tg/inputs.tg` (with a pre-launch build), and
 attach-by-PID (useful for attaching to one rank of an `mpirun`-launched
 run).  CodeLLDB is auto-installed on first use.
 
@@ -141,20 +141,24 @@ run).  CodeLLDB is auto-installed on first use.
 
 | File                                      | What it exercises                                          |
 | ----------------------------------------- | ---------------------------------------------------------- |
-| `tests/tg/inputs.tg`                      | Single-level smoke test (32³, periodic, Taylor–Green).     |
-| `tests/tg_amr/inputs.tg_amr`              | 2-level AMR per-level Perot path + regrid + FillPatch.     |
-| `tests/tg2d/inputs.tg2d`                  | 2D analytic Taylor–Green verification.                     |
-| `tests/lid/inputs.lid`                    | Lid-driven cavity — all-Dirichlet BCs, singular pressure.  |
-| `tests/lid_amr/inputs.lid_amr`            | AMR lid-driven cavity.                                     |
-| `tests/channel/inputs.channel`            | Inflow/outflow — non-singular pressure (outflow Dirichlet).|
-| `tests/ib_plane/inputs.ib_plane`          | Single-level coupled IB projection smoke test.             |
-| `tests/ib_plane_amr/inputs.ib_plane_amr`  | Finest-level coupled IB projection with AMR tagging.       |
-| `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel flow past a stationary cylindrical IB surface. |
+| `tests/2d/tg2d/inputs.tg2d`               | Native 2D analytic Taylor–Green verification.              |
+| `tests/2d/tg2d_amr/inputs.tg2d_amr`       | Native 2D AMR Taylor–Green verification.                   |
+| `tests/2d/ib_square/inputs.ib_square`     | Native 2D coupled IB projection smoke test.                |
+| `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR.   |
+| `tests/3d/tg/inputs.tg`                   | Single-level smoke test (32³, periodic, Taylor–Green).     |
+| `tests/3d/tg_amr/inputs.tg_amr`           | 2-level AMR per-level Perot path + regrid + FillPatch.     |
+| `tests/3d/tg2d/inputs.tg2d`               | Thin-periodic-z 2D Taylor–Green verification for 3D builds.|
+| `tests/3d/lid/inputs.lid`                 | Lid-driven cavity — all-Dirichlet BCs, singular pressure.  |
+| `tests/3d/lid_amr/inputs.lid_amr`         | AMR lid-driven cavity.                                     |
+| `tests/3d/channel/inputs.channel`         | Inflow/outflow — non-singular pressure (outflow Dirichlet).|
+| `tests/3d/ib_plane/inputs.ib_plane`       | Single-level coupled IB projection smoke test.             |
+| `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection with AMR tagging.     |
+| `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel flow past a stationary cylindrical IB surface. |
 
 Taylor–Green expectation: `|div u|_∞ ~ 10⁻¹¹` per step (Krylov-tolerance
 dominated), monotonic energy decay.  Any drift is a regression.
-`tests/lid/inputs.lid` should develop a
-single primary vortex and approach steady state; `tests/channel/inputs.channel`
+`tests/3d/lid/inputs.lid` should develop a
+single primary vortex and approach steady state; `tests/3d/channel/inputs.channel`
 should report "non-singular (outflow Dirichlet)" and relax the inlet
 toward Poiseuille.
 

@@ -8,7 +8,7 @@
 # Expected: a primary recirculating vortex fills the cavity, a
 # steady state is approached, |div u| stays at the CG tolerance.
 #
-#   ./build-release/src/ins_solver inputs.lid
+#   ./build-release/src/ins_solver tests/3d/lid/inputs.lid
 # ============================================================
 
 # ---- Domain ----

@@ -183,10 +183,10 @@ cmake --build build-debug --target ins_solver -j
 ln -sf build-debug/compile_commands.json compile_commands.json
 
 # Run single-level Taylor–Green vortex
-./build-debug/src/ins_solver tests/tg/inputs.tg
+./build-debug/src/ins_solver tests/3d/tg/inputs.tg
 
 # Run 2-level AMR Taylor–Green vortex
-./build-debug/src/ins_solver tests/tg_amr/inputs.tg_amr
+./build-debug/src/ins_solver tests/3d/tg_amr/inputs.tg_amr
 ```
 
 Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
@@ -196,15 +196,19 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 
 | Case | Configuration |
 | ---- | ------------- |
-| `tests/tg/inputs.tg` | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100. |
-| `tests/tg_amr/inputs.tg_amr` | 32³ base + 1 refinement level (2× ratio), vorticity tagging. |
-| `tests/tg2d/inputs.tg2d` | 2D Taylor–Green analytic/self-convergence case. |
-| `tests/lid/inputs.lid` | Lid-driven cavity, Re = 100 (no-slip walls, moving lid, z-periodic). |
-| `tests/lid_amr/inputs.lid_amr` | AMR lid-driven cavity. |
-| `tests/channel/inputs.channel` | Plane channel, uniform inflow / outflow, Re_h = 50. |
-| `tests/ib_plane/inputs.ib_plane` | Single-level coupled IB projection smoke test with `ib_plane.stl`. |
-| `tests/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection smoke test with AMR and `ib_plane.stl`. |
-| `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` | Channel past a stationary cylindrical IB surface; coarse `1.5dx` STL smoke case. |
+| `tests/2d/tg2d/inputs.tg2d` | Native 2D Taylor–Green analytic/self-convergence case for `ins_solver_2d`. |
+| `tests/2d/tg2d_amr/inputs.tg2d_amr` | Native 2D Taylor–Green AMR case for `ins_solver_2d`. |
+| `tests/2d/ib_square/inputs.ib_square` | Native 2D coupled IB projection smoke test for `ins_solver_2d`. |
+| `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR for `ins_solver_2d`. |
+| `tests/3d/tg/inputs.tg` | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100. |
+| `tests/3d/tg_amr/inputs.tg_amr` | 32³ base + 1 refinement level (2× ratio), vorticity tagging. |
+| `tests/3d/tg2d/inputs.tg2d` | Thin-periodic-z Taylor–Green analytic case for the 3D executable. |
+| `tests/3d/lid/inputs.lid` | Lid-driven cavity, Re = 100 (no-slip walls, moving lid, z-periodic). |
+| `tests/3d/lid_amr/inputs.lid_amr` | AMR lid-driven cavity. |
+| `tests/3d/channel/inputs.channel` | Plane channel, uniform inflow / outflow, Re_h = 50. |
+| `tests/3d/ib_plane/inputs.ib_plane` | Single-level coupled IB projection smoke test with `ib_plane.stl`. |
+| `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection smoke test with AMR and `ib_plane.stl`. |
+| `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Channel past a stationary cylindrical IB surface; coarse `1.5dx` STL smoke case. |
 
 The Taylor–Green cases decay monotonically from the analytical IC;
 at convergence `|div u|_∞ ~ 10⁻¹¹` per step (Krylov tolerance

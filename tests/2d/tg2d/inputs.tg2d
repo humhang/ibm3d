@@ -1,0 +1,33 @@
+# ============================================================
+# inputs.tg2d — native 2D Taylor-Green decaying vortex
+#
+# Use with the AMREX_SPACEDIM=2 executable:
+#   ./build-release/src/ins_solver_2d tests/2d/tg2d/inputs.tg2d
+# ============================================================
+
+geometry.prob_lo     =  0.0                0.0
+geometry.prob_hi     =  6.283185307179586  6.283185307179586
+geometry.is_periodic =  1  1
+
+amr.n_cell           =  32  32
+amr.max_level        =  0
+amr.blocking_factor  =  4
+amr.max_grid_size    =  64
+amr.v                =  0
+
+ins.bc_xlo = periodic
+ins.bc_xhi = periodic
+ins.bc_ylo = periodic
+ins.bc_yhi = periodic
+
+ins.ic               =  tg2d
+ins.nu               =  5.0e-2
+ins.cfl              =  0.4
+ins.fixed_dt         =  2.5e-4
+ins.t_stop           =  0.15
+ins.max_step         =  200000
+ins.plot_int         =  0
+ins.cn_order         =  2
+ins.poisson_tol      =  1.0e-12
+ins.poisson_max_iter =  2000
+ins.verbose          =  0

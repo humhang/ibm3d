@@ -52,7 +52,7 @@ harmless at fixed grid; with *frequent* regrids it can erode the
 formal temporal order (the deferred fix is to FillPatch
 `m_advect_old` through the regrid hooks, like the velocity).
 
-**Reproduce:** `tests/tg2d/inputs.tg2d` (ic=tg2d; set `tg_uc`/`tg_vc` for the
+**Reproduce:** `tests/3d/tg2d/inputs.tg2d` (ic=tg2d; set `tg_uc`/`tg_vc` for the
 convecting case).  Prints `TG2D-ERROR … L2= Linf=`; with
 `ins.tg2d_dump`/`ins.tg2d_cmp` prints `TG2D-SELFCONV … L2diff=`.
 Code: `ComputeTG2DError` + the tg2d branch in `InitFlowField` +
@@ -61,14 +61,14 @@ the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
 
 **IB smoke tests (2026-05-20):**
 
-- `tests/ib_plane/inputs.ib_plane` — single-level two-triangle STL
+- `tests/3d/ib_plane/inputs.ib_plane` — single-level two-triangle STL
   plane in the Taylor–Green field.  One step gives
   `|E u - U_ib|_inf ≈ 2.0e-10`, `|div u|_inf ≈ 6.6e-12`.
-- `tests/ib_plane_amr/inputs.ib_plane_amr` — same geometry with one
+- `tests/3d/ib_plane_amr/inputs.ib_plane_amr` — same geometry with one
   refinement level.  Vorticity tags plus IB tags keep the body on the
   finest mesh.  One step gives `|E u - U_ib|_inf ≈ 2.1e-10`,
   `|div u|_inf ≈ 2.7e-11`.
-- `tests/ib_cylinder_channel/inputs.ib_cylinder_channel` — channel
+- `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` — channel
   flow past a stationary radius-0.125 cylinder, with STL panel sizes
   near `1.5 * dx` for the current unpreconditioned coupled solver.
   One step gives roughly 200 IB BiCGStab iterations at `1e-4`

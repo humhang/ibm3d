@@ -23,7 +23,7 @@
 # height; tightens under refinement, per the 2nd-order accuracy).
 # |div u|_inf stays ~1e-11.
 #
-#   ./build-release/src/ins_solver inputs.channel
+#   ./build-release/src/ins_solver tests/3d/channel/inputs.channel
 # ============================================================
 
 # ---- Domain ----  L = 4, h = 1, thin isotropic z (dx = dy = dz)

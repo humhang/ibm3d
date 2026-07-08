@@ -12,7 +12,7 @@
 #   |div u|_inf      ~ 1e-11
 #
 # Run from the repository root:
-#   ./build-release/src/ins_solver tests/ib_plane/inputs.ib_plane
+#   ./build-release/src/ins_solver tests/3d/ib_plane/inputs.ib_plane
 # ============================================================
 
 # ---- Domain ----
@@ -40,6 +40,6 @@ ins.verbose          =  2
 ins.plot_prefix      =  plt_ib_plane
 
 # ---- Immersed boundary ----
-ib.geometry          =  tests/ib_plane/ib_plane.stl
+ib.geometry          =  tests/3d/ib_plane/ib_plane.stl
 ib.velocity          =  0.0  0.0  0.0
 ib.refine_radius     =  4.0

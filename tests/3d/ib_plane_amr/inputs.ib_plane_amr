@@ -1,7 +1,7 @@
 # ============================================================
 # inputs.ib_plane_amr — AMR IB projection smoke test
 #
-# Same stationary two-triangle immersed plane as tests/ib_plane, but
+# Same stationary two-triangle immersed plane as tests/3d/ib_plane, but
 # with one refinement level.  Vorticity tagging stays active and the IB
 # marker-neighborhood tags guarantee the body is also covered by the
 # finest mesh.
@@ -13,7 +13,7 @@
 #   |div u|_inf      ~ 1e-11
 #
 # Run from the repository root:
-#   ./build-release/src/ins_solver tests/ib_plane_amr/inputs.ib_plane_amr
+#   ./build-release/src/ins_solver tests/3d/ib_plane_amr/inputs.ib_plane_amr
 # ============================================================
 
 # ---- Domain ----
@@ -46,6 +46,6 @@ ins.verbose          =  2
 ins.plot_prefix      =  plt_ib_plane_amr
 
 # ---- Immersed boundary ----
-ib.geometry          =  tests/ib_plane_amr/ib_plane.stl
+ib.geometry          =  tests/3d/ib_plane_amr/ib_plane.stl
 ib.velocity          =  0.0  0.0  0.0
 ib.refine_radius     =  4.0

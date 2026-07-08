@@ -10,7 +10,7 @@
 # coarse-fine interaction that the periodic and interior-refined
 # tests do not.
 #
-#   ./build-release/src/ins_solver inputs.lid_amr
+#   ./build-release/src/ins_solver tests/3d/lid_amr/inputs.lid_amr
 # ============================================================
 
 # ---- Domain ----

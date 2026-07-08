@@ -1,7 +1,7 @@
 # ============================================================
 # inputs.ib_cylinder_channel — channel flow past a stationary cylinder
 #
-# This is a more geometric IB smoke case built from tests/channel.
+# This is a more geometric IB smoke case built from tests/3d/channel.
 # The current coupled IB projection is still the local unpreconditioned
 # BiCGStab path, so this case deliberately uses an IB panel size near
 # 1.5 * dx instead of a finer body mesh.
@@ -20,10 +20,10 @@
 #   |div u|_inf      = O(1e-4)
 #
 # Regenerate the STL with:
-#   python3 tests/ib_cylinder_channel/generate_cylinder_stl.py
+#   python3 tests/3d/ib_cylinder_channel/generate_cylinder_stl.py
 #
 # Run from the repository root:
-#   ./build-release/src/ins_solver tests/ib_cylinder_channel/inputs.ib_cylinder_channel
+#   ./build-release/src/ins_solver tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel
 # ============================================================
 
 # ---- Domain ----  L = 4, h = 1, thin isotropic z
@@ -62,5 +62,5 @@ ins.verbose          =  2
 ins.plot_prefix      =  plt_ib_cylinder_channel
 
 # ---- Immersed boundary ----
-ib.geometry          =  tests/ib_cylinder_channel/cylinder.stl
+ib.geometry          =  tests/3d/ib_cylinder_channel/cylinder.stl
 ib.velocity          =  0.0  0.0  0.0

@@ -91,12 +91,12 @@ Decisions baked into the current solver, with rationale:
      velocity is re-imposed on `u*` and `u^{n+1}` by
      `EnforceVelDirichlet` after the predictor and the projection.
      Standard low-truncation-order treatment; O(εL·boundary) error.
-   - **Tested**: periodic Taylor–Green regression is stable; `tests/lid/inputs.lid`
-     and `tests/channel/inputs.channel` have been run-verified.  The channel case is
+   - **Tested**: periodic Taylor–Green regression is stable; `tests/3d/lid/inputs.lid`
+     and `tests/3d/channel/inputs.channel` have been run-verified.  The channel case is
      the outflow-Dirichlet pressure check.
 
 10. **Per-level operator must zero its coarse–fine ghosts**
-    (bug found + fixed 2026-05-18, `tests/lid_amr/inputs.lid_amr`).  The per-level
+    (bug found + fixed 2026-05-18, `tests/3d/lid_amr/inputs.lid_amr`).  The per-level
     modified-Poisson Krylov path (`SolveModifiedPoisson` / `ApplyBNFace` /
     `ApplyModifiedPoissonOp`) only fills ghosts via `FillBoundary` +
     domain physical BC.  It does **not** interpolate C/F ghosts from
@@ -172,7 +172,7 @@ Decisions baked into the current solver, with rationale:
 
     **Verified 2026-05-18**: single-level lid `|div u|~3e-11`;
     1-level AMR lid stable, `|u|` tracks single-level, `|div u|~1e-2`
-    at C/F; full 2-level `tests/lid_amr/inputs.lid_amr` stable, `|u|` 0.07→0.23
+    at C/F; full 2-level `tests/3d/lid_amr/inputs.lid_amr` stable, `|u|` 0.07→0.23
     smooth, `|div u|~2e-2` (bounded, steady).  The residual
     `|div u|~1e-2` at C/F is the *expected* per-level-approximation
     error (Dirichlet-from-coarse, no reflux) — interior is
@@ -242,8 +242,8 @@ Decisions baked into the current solver, with rationale:
     solve for `[-D; E] B^N [G H] [p; f]`.  IB coupling is
     applied only on the finest AMR level; coarser data is overwritten by
     average-down where covered.  The supplied IB smoke cases are:
-    `tests/ib_plane`, `tests/ib_plane_amr`, and
-    `tests/ib_cylinder_channel`.  The cylinder case intentionally uses an
+    `tests/3d/ib_plane`, `tests/3d/ib_plane_amr`, and
+    `tests/3d/ib_cylinder_channel`.  The cylinder case intentionally uses an
     STL panel size near `1.5 * dx` because the current unpreconditioned
     coupled solve is sensitive to over-refined IB meshes.  The planned
     Tpetra/Belos + MLMG path remains future work.
