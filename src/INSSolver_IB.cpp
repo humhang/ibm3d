@@ -12,6 +12,7 @@
 #include <AMReX.H>
 #include <AMReX_Gpu.H>
 #include <AMReX_GpuAtomic.H>
+#include <AMReX_Math.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
@@ -25,60 +26,87 @@ using namespace amrex;
 
 namespace {
 
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real ib_phi4(Real r) noexcept {
-  r = std::abs(r);
-  if (r < 1.0_rt) {
-    return 0.125_rt * (3.0_rt - 2.0_rt * r +
-                       std::sqrt(1.0_rt + 4.0_rt * r - 4.0_rt * r * r));
-  }
-  if (r < 2.0_rt) {
-    return 0.125_rt * (5.0_rt - 2.0_rt * r -
-                       std::sqrt(-7.0_rt + 12.0_rt * r - 4.0_rt * r * r));
-  }
-  return 0.0_rt;
-}
+struct Peskin4Kernel {
+  static constexpr int support_width = 4;
+  static constexpr Real support_radius = Real(0.5) * support_width;
 
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real
-periodic_displacement(Real x, Real x0, Real length, int periodic) noexcept {
-  Real r = x - x0;
-  if (periodic) {
-    if (r > 0.5_rt * length)
-      r -= length;
-    if (r < -0.5_rt * length)
-      r += length;
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE static Real phi(Real r) noexcept {
+    r = std::abs(r);
+    if (r < 1.0_rt) {
+      return 0.125_rt * (3.0_rt - 2.0_rt * r +
+                         std::sqrt(1.0_rt + 4.0_rt * r - 4.0_rt * r * r));
+    }
+    if (r < support_radius) {
+      return 0.125_rt * (5.0_rt - 2.0_rt * r -
+                         std::sqrt(-7.0_rt + 12.0_rt * r - 4.0_rt * r * r));
+    }
+    return 0.0_rt;
   }
-  return r;
-}
 
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real
-ib_delta(const GpuArray<Real, AMREX_SPACEDIM> &x, const ibm3d::IBMarker &marker,
-         const GpuArray<Real, AMREX_SPACEDIM> &dx,
-         const GpuArray<Real, AMREX_SPACEDIM> &prob_len,
-         const GpuArray<int, AMREX_SPACEDIM> &periodic) noexcept {
-  Real delta = 1.0_rt;
-  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-    const Real r =
-        periodic_displacement(x[d], marker.x[d], prob_len[d], periodic[d]);
-    const Real ph = ib_phi4(r / dx[d]);
-    if (ph == 0.0_rt)
-      return 0.0_rt;
-    delta *= ph / dx[d];
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE static Real
+  periodic_displacement(Real x, Real x0, Real length, int periodic) noexcept {
+    Real r = x - x0;
+    if (periodic) {
+      if (r > 0.5_rt * length)
+        r -= length;
+      if (r < -0.5_rt * length)
+        r += length;
+    }
+    return r;
   }
-  return delta;
-}
 
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE GpuArray<Real, AMREX_SPACEDIM>
-face_position(int dir, int i, int j, int k,
-              const GpuArray<Real, AMREX_SPACEDIM> &plo,
-              const GpuArray<Real, AMREX_SPACEDIM> &dx) noexcept {
-  GpuArray<Real, AMREX_SPACEDIM> x{};
-  x[0] = plo[0] + (i + (dir == 0 ? 0.0_rt : 0.5_rt)) * dx[0];
-  x[1] = plo[1] + (j + (dir == 1 ? 0.0_rt : 0.5_rt)) * dx[1];
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE static Real
+  face_offset(int dir, int d) noexcept {
+    return dir == d ? 0.0_rt : 0.5_rt;
+  }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE static Real
+  face_coordinate(int dir, int d, int index,
+                  const GpuArray<Real, AMREX_SPACEDIM> &plo,
+                  const GpuArray<Real, AMREX_SPACEDIM> &dx) noexcept {
+    return plo[d] + (index + face_offset(dir, d)) * dx[d];
+  }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE static void
+  support_bounds(Real marker_coord, int dir, int d,
+                 const GpuArray<Real, AMREX_SPACEDIM> &plo,
+                 const GpuArray<Real, AMREX_SPACEDIM> &dx, int &lo,
+                 int &hi) noexcept {
+    const Real center = (marker_coord - plo[d]) / dx[d] - face_offset(dir, d);
+    lo = static_cast<int>(amrex::Math::floor(center - support_radius));
+    hi = static_cast<int>(amrex::Math::floor(center + support_radius));
+  }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE static Real
+  delta(int dir, int i, int j, int k,
+        const GpuArray<Real, AMREX_SPACEDIM> &marker_x,
+        const GpuArray<Real, AMREX_SPACEDIM> &plo,
+        const GpuArray<Real, AMREX_SPACEDIM> &dx) noexcept {
+    const int index[AMREX_SPACEDIM] = {AMREX_D_DECL(i, j, k)};
+    Real value = 1.0_rt;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      const Real x = face_coordinate(dir, d, index[d], plo, dx);
+      const Real ph = phi((x - marker_x[d]) / dx[d]);
+      if (ph == 0.0_rt)
+        return 0.0_rt;
+      value *= ph / dx[d];
+    }
+    return value;
+  }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE static GpuArray<Real, AMREX_SPACEDIM>
+  face_position(int dir, int i, int j, int k,
+                const GpuArray<Real, AMREX_SPACEDIM> &plo,
+                const GpuArray<Real, AMREX_SPACEDIM> &dx) noexcept {
+    GpuArray<Real, AMREX_SPACEDIM> x{};
+    x[0] = face_coordinate(dir, 0, i, plo, dx);
+    x[1] = face_coordinate(dir, 1, j, plo, dx);
 #if AMREX_SPACEDIM == 3
-  x[2] = plo[2] + (k + (dir == 2 ? 0.0_rt : 0.5_rt)) * dx[2];
+    x[2] = face_coordinate(dir, 2, k, plo, dx);
 #endif
-  return x;
-}
+    return x;
+  }
+};
 
 Real vector_dot(const std::vector<Real> &a, const std::vector<Real> &b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), Real(0.0));
@@ -155,15 +183,80 @@ void INSSolver::SpreadIBForce(int lev, int dir, const std::vector<Real> &force,
   for (MFIter mfi(hforce, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
     const Box &bx = mfi.tilebox(nod);
     auto const &h = hforce.array(mfi);
-    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      const auto x = face_position(dir, i, j, k, plo, dx);
-      Real sum = 0.0_rt;
-      for (int marker = 0; marker < nmarkers; ++marker) {
-        const Real delta = ib_delta(x, markers[marker], dx, prob_len, periodic);
-        sum +=
-            f[marker * AMREX_SPACEDIM + dir] * markers[marker].weight * delta;
+    const int bxlo0 = bx.smallEnd(0);
+    const int bxhi0 = bx.bigEnd(0);
+    const int bxlo1 = bx.smallEnd(1);
+    const int bxhi1 = bx.bigEnd(1);
+#if AMREX_SPACEDIM == 3
+    const int bxlo2 = bx.smallEnd(2);
+    const int bxhi2 = bx.bigEnd(2);
+#endif
+    amrex::ParallelFor(nmarkers, [=] AMREX_GPU_DEVICE(int marker) noexcept {
+      const auto marker_data = markers[marker];
+      const Real marker_force =
+          f[marker * AMREX_SPACEDIM + dir] * marker_data.weight;
+      if (marker_force == 0.0_rt)
+        return;
+
+      const int sx_begin = periodic[0] ? -1 : 0;
+      const int sx_end = periodic[0] ? 1 : 0;
+      const int sy_begin = periodic[1] ? -1 : 0;
+      const int sy_end = periodic[1] ? 1 : 0;
+#if AMREX_SPACEDIM == 3
+      const int sz_begin = periodic[2] ? -1 : 0;
+      const int sz_end = periodic[2] ? 1 : 0;
+#endif
+
+      for (int sx = sx_begin; sx <= sx_end; ++sx) {
+        for (int sy = sy_begin; sy <= sy_end; ++sy) {
+#if AMREX_SPACEDIM == 3
+          for (int sz = sz_begin; sz <= sz_end; ++sz) {
+#endif
+            GpuArray<Real, AMREX_SPACEDIM> marker_x = marker_data.x;
+            marker_x[0] += static_cast<Real>(sx) * prob_len[0];
+            marker_x[1] += static_cast<Real>(sy) * prob_len[1];
+#if AMREX_SPACEDIM == 3
+            marker_x[2] += static_cast<Real>(sz) * prob_len[2];
+#endif
+
+            int ilo, ihi, jlo, jhi;
+            Peskin4Kernel::support_bounds(marker_x[0], dir, 0, plo, dx, ilo,
+                                          ihi);
+            Peskin4Kernel::support_bounds(marker_x[1], dir, 1, plo, dx, jlo,
+                                          jhi);
+            const int ii0 = (ilo > bxlo0) ? ilo : bxlo0;
+            const int ii1 = (ihi < bxhi0) ? ihi : bxhi0;
+            const int jj0 = (jlo > bxlo1) ? jlo : bxlo1;
+            const int jj1 = (jhi < bxhi1) ? jhi : bxhi1;
+            if (ii0 > ii1 || jj0 > jj1)
+              continue;
+
+            int kk0 = 0;
+            int kk1 = 0;
+#if AMREX_SPACEDIM == 3
+            int klo, khi;
+            Peskin4Kernel::support_bounds(marker_x[2], dir, 2, plo, dx, klo,
+                                          khi);
+            kk0 = (klo > bxlo2) ? klo : bxlo2;
+            kk1 = (khi < bxhi2) ? khi : bxhi2;
+            if (kk0 > kk1)
+              continue;
+#endif
+            for (int k = kk0; k <= kk1; ++k) {
+              for (int j = jj0; j <= jj1; ++j) {
+                for (int i = ii0; i <= ii1; ++i) {
+                  const Real delta =
+                      Peskin4Kernel::delta(dir, i, j, k, marker_x, plo, dx);
+                  if (delta != 0.0_rt)
+                    HostDevice::Atomic::Add(&h(i, j, k), marker_force * delta);
+                }
+              }
+            }
+#if AMREX_SPACEDIM == 3
+          }
+#endif
+        }
       }
-      h(i, j, k) = sum;
     });
   }
   Gpu::streamSynchronize();
@@ -205,21 +298,83 @@ void INSSolver::InterpolateIBVelocity(
       const Box &bx = mfi.tilebox();
       auto const &u = mf.const_array(mfi);
       auto const &mask = owner->const_array(mfi);
-      amrex::ParallelFor(
-          bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            if (mask(i, j, k) == 0)
-              return;
-            const auto x = face_position(dir, i, j, k, plo, dx);
-            for (int marker = 0; marker < nmarkers; ++marker) {
-              const Real delta =
-                  ib_delta(x, markers_p[marker], dx, prob_len, periodic);
-              if (delta != 0.0_rt) {
-                HostDevice::Atomic::Add(
-                    &marker_vel_p[marker * AMREX_SPACEDIM + dir],
-                    u(i, j, k) * delta * dv);
+      const int bxlo0 = bx.smallEnd(0);
+      const int bxhi0 = bx.bigEnd(0);
+      const int bxlo1 = bx.smallEnd(1);
+      const int bxhi1 = bx.bigEnd(1);
+#if AMREX_SPACEDIM == 3
+      const int bxlo2 = bx.smallEnd(2);
+      const int bxhi2 = bx.bigEnd(2);
+#endif
+      amrex::ParallelFor(nmarkers, [=] AMREX_GPU_DEVICE(int marker) noexcept {
+        const auto marker_data = markers_p[marker];
+        Real marker_sum = 0.0_rt;
+
+        const int sx_begin = periodic[0] ? -1 : 0;
+        const int sx_end = periodic[0] ? 1 : 0;
+        const int sy_begin = periodic[1] ? -1 : 0;
+        const int sy_end = periodic[1] ? 1 : 0;
+#if AMREX_SPACEDIM == 3
+        const int sz_begin = periodic[2] ? -1 : 0;
+        const int sz_end = periodic[2] ? 1 : 0;
+#endif
+
+        for (int sx = sx_begin; sx <= sx_end; ++sx) {
+          for (int sy = sy_begin; sy <= sy_end; ++sy) {
+#if AMREX_SPACEDIM == 3
+            for (int sz = sz_begin; sz <= sz_end; ++sz) {
+#endif
+              GpuArray<Real, AMREX_SPACEDIM> marker_x = marker_data.x;
+              marker_x[0] += static_cast<Real>(sx) * prob_len[0];
+              marker_x[1] += static_cast<Real>(sy) * prob_len[1];
+#if AMREX_SPACEDIM == 3
+              marker_x[2] += static_cast<Real>(sz) * prob_len[2];
+#endif
+
+              int ilo, ihi, jlo, jhi;
+              Peskin4Kernel::support_bounds(marker_x[0], dir, 0, plo, dx, ilo,
+                                            ihi);
+              Peskin4Kernel::support_bounds(marker_x[1], dir, 1, plo, dx, jlo,
+                                            jhi);
+              const int ii0 = (ilo > bxlo0) ? ilo : bxlo0;
+              const int ii1 = (ihi < bxhi0) ? ihi : bxhi0;
+              const int jj0 = (jlo > bxlo1) ? jlo : bxlo1;
+              const int jj1 = (jhi < bxhi1) ? jhi : bxhi1;
+              if (ii0 > ii1 || jj0 > jj1)
+                continue;
+
+              int kk0 = 0;
+              int kk1 = 0;
+#if AMREX_SPACEDIM == 3
+              int klo, khi;
+              Peskin4Kernel::support_bounds(marker_x[2], dir, 2, plo, dx, klo,
+                                            khi);
+              kk0 = (klo > bxlo2) ? klo : bxlo2;
+              kk1 = (khi < bxhi2) ? khi : bxhi2;
+              if (kk0 > kk1)
+                continue;
+#endif
+              for (int k = kk0; k <= kk1; ++k) {
+                for (int j = jj0; j <= jj1; ++j) {
+                  for (int i = ii0; i <= ii1; ++i) {
+                    if (mask(i, j, k) == 0)
+                      continue;
+                    const Real delta =
+                        Peskin4Kernel::delta(dir, i, j, k, marker_x, plo, dx);
+                    marker_sum += u(i, j, k) * delta * dv;
+                  }
+                }
               }
+#if AMREX_SPACEDIM == 3
             }
-          });
+#endif
+          }
+        }
+        if (marker_sum != 0.0_rt) {
+          HostDevice::Atomic::Add(&marker_vel_p[marker * AMREX_SPACEDIM + dir],
+                                  marker_sum);
+        }
+      });
     }
     Gpu::streamSynchronize();
   }
@@ -474,8 +629,8 @@ void INSSolver::AddIBTags(int lev, TagBoxArray &tags) const {
       for (int marker = 0; marker < nmarkers; ++marker) {
         Real dist2 = 0.0_rt;
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-          const Real r = periodic_displacement(x[d], markers[marker].x[d],
-                                               prob_len[d], periodic[d]);
+          const Real r = Peskin4Kernel::periodic_displacement(
+              x[d], markers[marker].x[d], prob_len[d], periodic[d]);
           dist2 += r * r;
         }
         if (dist2 <= radius2) {

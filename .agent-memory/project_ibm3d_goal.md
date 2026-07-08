@@ -31,8 +31,8 @@ Taira–Colonius IB projection path is in place on the finest AMR level.
 - The coupled finest-level projection solves `[-D; E] B^N [G H] [p; f]`
   with the existing matrix-free BiCGStab path.  `H` spreads force
   components to matching MAC faces and `E` interpolates with
-  `ParallelFor`, owner masks, and atomics to avoid double-counting shared
-  patch faces.
+  marker-centred finite-support kernels, owner masks, and atomics to
+  avoid double-counting shared patch faces.
 - Verified on 3D Taylor–Green vortex: `|div u|_∞ ~ 10⁻¹¹` per step at
   single level *and* at 2 AMR levels (Krylov tolerance dominated, not
   method error), monotonic energy decay matching the previous
