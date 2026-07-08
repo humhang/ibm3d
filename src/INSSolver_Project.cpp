@@ -22,11 +22,13 @@
 
 #include "INSSolver.H"
 
+#include <AMReX.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_Print.H>
 
 #include <cmath>
 #include <limits>
+#include <sstream>
 
 using namespace amrex;
 
@@ -169,14 +171,21 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
   Real rsold = MultiFab::Dot(rr, 0, rr, 0, 1, 0);
 
   const Real tiny = 1.0e-300;
+  const char *breakdown = nullptr;
   int iter = 0;
   for (; iter < m_poisson_max_iter; ++iter) {
-    if (rsold < tol2 || !std::isfinite(rsold))
+    if (rsold < tol2)
       break;
+    if (!std::isfinite(rsold)) {
+      breakdown = "non-finite residual";
+      break;
+    }
 
     const Real rho_new = MultiFab::Dot(rhat, 0, rr, 0, 1, 0);
-    if (std::abs(rho_new) < tiny)
-      break; // breakdown
+    if (std::abs(rho_new) < tiny) {
+      breakdown = "rho breakdown";
+      break;
+    }
     const Real beta = (rho_new / rho) * (alpha / omega);
 
     // pv ← rr + beta (pv − omega v)
@@ -187,8 +196,10 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
     ApplyModifiedPoissonOp(lev, pv, v);
 
     const Real rhatv = MultiFab::Dot(rhat, 0, v, 0, 1, 0);
-    if (std::abs(rhatv) < tiny)
+    if (std::abs(rhatv) < tiny) {
+      breakdown = "rhat-v breakdown";
       break;
+    }
     alpha = rho_new / rhatv;
 
     // s ← rr − alpha v
@@ -217,13 +228,36 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
 
     rho = rho_new;
     rsold = MultiFab::Dot(rr, 0, rr, 0, 1, 0);
-    if (std::abs(omega) < tiny)
-      break; // breakdown
+    if (std::abs(omega) < tiny) {
+      breakdown = "omega breakdown";
+      break;
+    }
   }
 
   // Re-pin the mean of the solution (truly-singular level only).
   if (level_singular)
     SubtractMean(lev, p);
+
+  const bool converged = std::isfinite(rsold) && rsold < tol2;
+  if (!converged) {
+    const Real relres = std::sqrt(std::max(rsold, Real(0.0)) /
+                                  std::max(rhs_norm2, Real(1.0e-300)));
+    std::ostringstream msg;
+    msg << "Modified Poisson solve on level " << lev;
+    if (breakdown != nullptr) {
+      msg << " stopped by " << breakdown;
+    } else if (iter >= m_poisson_max_iter) {
+      msg << " reached max_iter";
+    } else {
+      msg << " failed to converge";
+    }
+    msg << "; the pressure system may be singular, inconsistent, or "
+           "ill-conditioned"
+        << " (level_singular = " << level_singular
+        << ", cells = " << grids[lev].numPts() << ", iter = " << iter
+        << ", relres = " << relres << ").";
+    amrex::Warning(msg.str());
+  }
 
   if (m_verbose > 1) {
     const Real relres = std::sqrt(std::max(rsold, Real(0.0)) /
@@ -280,8 +314,8 @@ void INSSolver::ProjectPerot() {
   for (int lev = 0; lev < nlev; ++lev) {
     const BoxArray &ba = grids[lev];
     const DistributionMapping &dm = dmap[lev];
-    const bool use_ib = m_ib_enabled && lev == finest_level &&
-                        !m_ib_geometry.markers.empty();
+    const bool use_ib =
+        m_ib_enabled && lev == finest_level && !m_ib_geometry.markers.empty();
 
     // RHS = −(1/dt) D u*   (negated to pair with the negated operator)
     MultiFab rhs(ba, dm, 1, 0);

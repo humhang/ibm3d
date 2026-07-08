@@ -9,6 +9,7 @@
 
 #include "INSSolver.H"
 
+#include <AMReX.H>
 #include <AMReX_Gpu.H>
 #include <AMReX_GpuAtomic.H>
 #include <AMReX_MultiFabUtil.H>
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <sstream>
 
 using namespace amrex;
 
@@ -49,8 +51,7 @@ periodic_displacement(Real x, Real x0, Real length, int periodic) noexcept {
 }
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE Real
-ib_delta(const GpuArray<Real, AMREX_SPACEDIM> &x,
-         const ibm3d::IBMarker &marker,
+ib_delta(const GpuArray<Real, AMREX_SPACEDIM> &x, const ibm3d::IBMarker &marker,
          const GpuArray<Real, AMREX_SPACEDIM> &dx,
          const GpuArray<Real, AMREX_SPACEDIM> &prob_len,
          const GpuArray<int, AMREX_SPACEDIM> &periodic) noexcept {
@@ -158,8 +159,7 @@ void INSSolver::SpreadIBForce(int lev, int dir, const std::vector<Real> &force,
       const auto x = face_position(dir, i, j, k, plo, dx);
       Real sum = 0.0_rt;
       for (int marker = 0; marker < nmarkers; ++marker) {
-        const Real delta =
-            ib_delta(x, markers[marker], dx, prob_len, periodic);
+        const Real delta = ib_delta(x, markers[marker], dx, prob_len, periodic);
         sum +=
             f[marker * AMREX_SPACEDIM + dir] * markers[marker].weight * delta;
       }
@@ -337,14 +337,21 @@ int INSSolver::SolveIBProjection(int lev, MultiFab &p, const MultiFab &rhs_p_in,
   Real rsold = coupled_dot(rr_p, rr_ib, rr_p, rr_ib);
 
   const Real tiny = 1.0e-300;
+  const char *breakdown = nullptr;
   int iter = 0;
   for (; iter < m_poisson_max_iter; ++iter) {
-    if (rsold < tol2 || !std::isfinite(rsold))
+    if (rsold < tol2)
       break;
+    if (!std::isfinite(rsold)) {
+      breakdown = "non-finite residual";
+      break;
+    }
 
     const Real rho_new = coupled_dot(rhat_p, rhat_ib, rr_p, rr_ib);
-    if (std::abs(rho_new) < tiny)
+    if (std::abs(rho_new) < tiny) {
+      breakdown = "rho breakdown";
       break;
+    }
     const Real beta = (rho_new / rho) * (alpha / omega);
 
     MultiFab::LinComb(pv_p, 1.0_rt, pv_p, 0, -omega, v_p, 0, 0, 1, 0);
@@ -356,8 +363,10 @@ int INSSolver::SolveIBProjection(int lev, MultiFab &p, const MultiFab &rhs_p_in,
     ApplyIBSchurOp(lev, pv_p, pv_ib, v_p, v_ib);
 
     const Real rhatv = coupled_dot(rhat_p, rhat_ib, v_p, v_ib);
-    if (std::abs(rhatv) < tiny)
+    if (std::abs(rhatv) < tiny) {
+      breakdown = "rhat-v breakdown";
       break;
+    }
     alpha = rho_new / rhatv;
 
     MultiFab::LinComb(s_p, 1.0_rt, rr_p, 0, -alpha, v_p, 0, 0, 1, 0);
@@ -388,12 +397,35 @@ int INSSolver::SolveIBProjection(int lev, MultiFab &p, const MultiFab &rhs_p_in,
 
     rho = rho_new;
     rsold = coupled_dot(rr_p, rr_ib, rr_p, rr_ib);
-    if (std::abs(omega) < tiny)
+    if (std::abs(omega) < tiny) {
+      breakdown = "omega breakdown";
       break;
+    }
   }
 
   if (level_singular)
     SubtractMean(lev, p);
+
+  const bool converged = std::isfinite(rsold) && rsold < tol2;
+  if (!converged) {
+    const Real relres = std::sqrt(std::max(rsold, Real(0.0)) /
+                                  std::max(rhs_norm2, Real(1.0e-300)));
+    std::ostringstream msg;
+    msg << "IB coupled projection on level " << lev;
+    if (breakdown != nullptr) {
+      msg << " stopped by " << breakdown;
+    } else if (iter >= m_poisson_max_iter) {
+      msg << " reached max_iter";
+    } else {
+      msg << " failed to converge";
+    }
+    msg << "; the coupled IB system may be singular or rank deficient"
+        << " (markers = " << m_ib_geometry.markers.size()
+        << ", constraints = " << rhs_ib.size()
+        << ", cells = " << grids[lev].numPts() << ", relres = " << relres
+        << ").";
+    amrex::Warning(msg.str());
+  }
 
   if (m_verbose > 1) {
     const Real relres = std::sqrt(std::max(rsold, Real(0.0)) /
@@ -431,26 +463,25 @@ void INSSolver::AddIBTags(int lev, TagBoxArray &tags) const {
   for (MFIter mfi(tags, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
     const Box &bx = mfi.tilebox();
     auto const &tag = tags.array(mfi);
-    amrex::ParallelFor(
-        bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-          GpuArray<Real, AMREX_SPACEDIM> x{};
-          x[0] = plo[0] + (i + 0.5_rt) * dx[0];
-          x[1] = plo[1] + (j + 0.5_rt) * dx[1];
+    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      GpuArray<Real, AMREX_SPACEDIM> x{};
+      x[0] = plo[0] + (i + 0.5_rt) * dx[0];
+      x[1] = plo[1] + (j + 0.5_rt) * dx[1];
 #if AMREX_SPACEDIM == 3
-          x[2] = plo[2] + (k + 0.5_rt) * dx[2];
+      x[2] = plo[2] + (k + 0.5_rt) * dx[2];
 #endif
-          for (int marker = 0; marker < nmarkers; ++marker) {
-            Real dist2 = 0.0_rt;
-            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-              const Real r = periodic_displacement(
-                  x[d], markers[marker].x[d], prob_len[d], periodic[d]);
-              dist2 += r * r;
-            }
-            if (dist2 <= radius2) {
-              tag(i, j, k) = TagBox::SET;
-              break;
-            }
-          }
-        });
+      for (int marker = 0; marker < nmarkers; ++marker) {
+        Real dist2 = 0.0_rt;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+          const Real r = periodic_displacement(x[d], markers[marker].x[d],
+                                               prob_len[d], periodic[d]);
+          dist2 += r * r;
+        }
+        if (dist2 <= radius2) {
+          tag(i, j, k) = TagBox::SET;
+          break;
+        }
+      }
+    });
   }
 }
