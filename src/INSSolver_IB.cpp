@@ -10,6 +10,7 @@
 #include "INSSolver.H"
 
 #include <AMReX.H>
+#include <AMReX_BLProfiler.H>
 #include <AMReX_Gpu.H>
 #include <AMReX_GpuAtomic.H>
 #include <AMReX_Math.H>
@@ -131,6 +132,8 @@ Real coupled_dot(const MultiFab &a_p, const std::vector<Real> &a_ib,
 } // namespace
 
 void INSSolver::InitializeIBGeometry() {
+  BL_PROFILE("INSSolver::InitializeIBGeometry()");
+
   if (!m_ib_enabled)
     return;
 
@@ -153,6 +156,8 @@ void INSSolver::InitializeIBGeometry() {
 
 void INSSolver::SpreadIBForce(int lev, int dir, const std::vector<Real> &force,
                               MultiFab &hforce) {
+  BL_PROFILE("INSSolver::SpreadIBForce()");
+
   hforce.setVal(0.0);
   if (!m_ib_enabled || m_ib_geometry.markers.empty())
     return;
@@ -265,6 +270,8 @@ void INSSolver::SpreadIBForce(int lev, int dir, const std::vector<Real> &force,
 void INSSolver::InterpolateIBVelocity(
     int lev, const std::array<const MultiFab *, AMREX_SPACEDIM> &vel,
     std::vector<Real> &marker_vel) const {
+  BL_PROFILE("INSSolver::InterpolateIBVelocity()");
+
   const auto &markers = m_ib_geometry.markers;
   marker_vel.assign(markers.size() * AMREX_SPACEDIM, 0.0);
   if (!m_ib_enabled || markers.empty())
@@ -393,6 +400,8 @@ void INSSolver::ApplyIBSchurOp(int lev, const MultiFab &phi,
                                const std::vector<Real> &force,
                                MultiFab &result_p,
                                std::vector<Real> &result_ib) {
+  BL_PROFILE("INSSolver::ApplyIBSchurOp()");
+
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
 
@@ -444,6 +453,8 @@ void INSSolver::ApplyIBSchurOp(int lev, const MultiFab &phi,
 
 int INSSolver::SolveIBProjection(int lev, MultiFab &p, const MultiFab &rhs_p_in,
                                  const std::vector<Real> &rhs_ib) {
+  BL_PROFILE("INSSolver::SolveIBProjection()");
+
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
 
@@ -593,6 +604,8 @@ int INSSolver::SolveIBProjection(int lev, MultiFab &p, const MultiFab &rhs_p_in,
 }
 
 void INSSolver::AddIBTags(int lev, TagBoxArray &tags) const {
+  BL_PROFILE("INSSolver::AddIBTags()");
+
   if (!m_ib_enabled || m_ib_geometry.markers.empty() || lev >= max_level)
     return;
 

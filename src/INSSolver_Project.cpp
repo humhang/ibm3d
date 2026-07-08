@@ -23,6 +23,7 @@
 #include "INSSolver.H"
 
 #include <AMReX.H>
+#include <AMReX_BLProfiler.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_Print.H>
 
@@ -46,6 +47,8 @@ using namespace amrex;
 // ============================================================
 void INSSolver::ApplyModifiedPoissonOp(int lev, const MultiFab &phi,
                                        MultiFab &result) {
+  BL_PROFILE("INSSolver::ApplyModifiedPoissonOp()");
+
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
 
@@ -115,6 +118,8 @@ void INSSolver::SubtractMean(int lev, MultiFab &mf) {
 // ============================================================
 int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
                                     const MultiFab &rhs_in) {
+  BL_PROFILE("INSSolver::SolveModifiedPoisson()");
+
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
 
@@ -273,6 +278,8 @@ int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
 //                            when outflow p=0 is active.
 // ============================================================
 void INSSolver::CheckOutflowPressurePin() {
+  BL_PROFILE("INSSolver::CheckOutflowPressurePin()");
+
   if (m_pressure_singular) {
     if (m_verbose > 0)
       Print() << "Pressure-pin check skipped: no outflow Dirichlet face\n";
@@ -304,6 +311,8 @@ void INSSolver::CheckOutflowPressurePin() {
 //  ProjectPerot — orchestrate the per-level Perot projection.
 // ============================================================
 void INSSolver::ProjectPerot() {
+  BL_PROFILE("INSSolver::ProjectPerot()");
+
   const int nlev = finest_level + 1;
 
   // Sync u* fine→coarse so coarse face values at C/F equal the

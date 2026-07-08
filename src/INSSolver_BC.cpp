@@ -30,6 +30,7 @@
 
 #include "INSSolver.H"
 
+#include <AMReX_BLProfiler.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 
@@ -192,6 +193,8 @@ void INSSolver::BuildBCRecs() {
 // ============================================================
 void INSSolver::FillVelGhostPhys(int lev, int comp, MultiFab &mf,
                                  bool homogeneous) {
+  BL_PROFILE("INSSolver::FillVelGhostPhys()");
+
   mf.FillBoundary(geom[lev].periodicity()); // periodic + intra-level
 
   const Box &domain = geom[lev].Domain();
@@ -204,17 +207,16 @@ void INSSolver::FillVelGhostPhys(int lev, int comp, MultiFab &mf,
     const int dlo = domain.smallEnd(bdir);
     const int dhi = domain.bigEnd(bdir);
     // Boundary face index of the *normal* component:
-    const int floidx = dlo;       // lo boundary face
-    const int fhiidx = dhi + 1;   // hi boundary face
+    const int floidx = dlo;     // lo boundary face
+    const int fhiidx = dhi + 1; // hi boundary face
 
     for (int side = 0; side < 2; ++side) {
       const BCKind kind = (side == 0) ? m_bc_lo[bdir] : m_bc_hi[bdir];
       if (kind == BCKind::periodic)
         continue;
-      const Real g =
-          homogeneous ? 0.0
-                      : ((side == 0) ? m_bcvel_lo[bdir][comp]
-                                     : m_bcvel_hi[bdir][comp]);
+      const Real g = homogeneous ? 0.0
+                                 : ((side == 0) ? m_bcvel_lo[bdir][comp]
+                                                : m_bcvel_hi[bdir][comp]);
 
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
@@ -244,57 +246,57 @@ void INSSolver::FillVelGhostPhys(int lev, int comp, MultiFab &mf,
         const int bd = bdir;
         const BCKind kd = kind;
 
-        amrex::ParallelFor(
-            slab, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-              int ijk[3] = {i, j, k};
-              const int idx = ijk[bd];
+        amrex::ParallelFor(slab, [=] AMREX_GPU_DEVICE(int i, int j,
+                                                      int k) noexcept {
+          int ijk[3] = {i, j, k};
+          const int idx = ijk[bd];
 
-              auto interior_normal = [&](int off) {
-                int t[3] = {i, j, k};
-                t[bd] = (s == 0) ? (floidx + off) : (fhiidx - off);
-                return a(t[0], t[1], t[2]);
-              };
-              auto interior_tang = [&](int off) {
-                int t[3] = {i, j, k};
-                t[bd] = (s == 0) ? (dlo + off) : (dhi - off);
-                return a(t[0], t[1], t[2]);
-              };
+          auto interior_normal = [&](int off) {
+            int t[3] = {i, j, k};
+            t[bd] = (s == 0) ? (floidx + off) : (fhiidx - off);
+            return a(t[0], t[1], t[2]);
+          };
+          auto interior_tang = [&](int off) {
+            int t[3] = {i, j, k};
+            t[bd] = (s == 0) ? (dlo + off) : (dhi - off);
+            return a(t[0], t[1], t[2]);
+          };
 
-              if (normal) {
-                const int bidx = (s == 0) ? floidx : fhiidx;
-                if (kd == BCKind::dirichlet || kd == BCKind::slip) {
-                  const Real wall = (kd == BCKind::slip) ? 0.0 : g;
-                  if (idx == bidx) {
-                    a(i, j, k) = wall;
-                  } else {
-                    const int off = (s == 0) ? (bidx - idx) : (idx - bidx);
-                    a(i, j, k) = 2.0_rt * wall - interior_normal(off);
-                  }
-                } else {
-                  // outflow: boundary face is set by the projection;
-                  // ghost cells get the linear extrapolation beyond it
-                  // so that L(u)[bidx] = 0 in the normal direction.
-                  if (idx != bidx) {
-                    const int off = (s == 0) ? (bidx - idx) : (idx - bidx);
-                    a(i, j, k) = (1.0_rt + off) * interior_normal(0) -
-                                 (Real)off * interior_normal(1);
-                  }
-                }
+          if (normal) {
+            const int bidx = (s == 0) ? floidx : fhiidx;
+            if (kd == BCKind::dirichlet || kd == BCKind::slip) {
+              const Real wall = (kd == BCKind::slip) ? 0.0 : g;
+              if (idx == bidx) {
+                a(i, j, k) = wall;
               } else {
-                // Tangential face: wall is between ghost(-1) and
-                // interior(0); value at the wall = average.
-                const int m = (s == 0) ? (dlo - idx) : (idx - dhi);
-                if (kd == BCKind::dirichlet) {
-                  a(i, j, k) = 2.0_rt * g - interior_tang(m - 1);
-                } else if (kd == BCKind::slip) {
-                  a(i, j, k) = interior_tang(m - 1);
-                } else {
-                  // outflow: linear extrapolation gives ∂²u/∂n² = 0
-                  a(i, j, k) = (1.0_rt + m) * interior_tang(0) -
-                               (Real)m * interior_tang(1);
-                }
+                const int off = (s == 0) ? (bidx - idx) : (idx - bidx);
+                a(i, j, k) = 2.0_rt * wall - interior_normal(off);
               }
-            });
+            } else {
+              // outflow: boundary face is set by the projection;
+              // ghost cells get the linear extrapolation beyond it
+              // so that L(u)[bidx] = 0 in the normal direction.
+              if (idx != bidx) {
+                const int off = (s == 0) ? (bidx - idx) : (idx - bidx);
+                a(i, j, k) = (1.0_rt + off) * interior_normal(0) -
+                             (Real)off * interior_normal(1);
+              }
+            }
+          } else {
+            // Tangential face: wall is between ghost(-1) and
+            // interior(0); value at the wall = average.
+            const int m = (s == 0) ? (dlo - idx) : (idx - dhi);
+            if (kd == BCKind::dirichlet) {
+              a(i, j, k) = 2.0_rt * g - interior_tang(m - 1);
+            } else if (kd == BCKind::slip) {
+              a(i, j, k) = interior_tang(m - 1);
+            } else {
+              // outflow: linear extrapolation gives ∂²u/∂n² = 0
+              a(i, j, k) =
+                  (1.0_rt + m) * interior_tang(0) - (Real)m * interior_tang(1);
+            }
+          }
+        });
       }
     }
   }
@@ -304,6 +306,8 @@ void INSSolver::FillVelGhostPhys(int lev, int comp, MultiFab &mf,
 //  FillPresGhostPhys — Neumann at dirichlet/slip, p=0 at outflow
 // ============================================================
 void INSSolver::FillPresGhostPhys(int lev, MultiFab &mf) {
+  BL_PROFILE("INSSolver::FillPresGhostPhys()");
+
   mf.FillBoundary(geom[lev].periodicity());
 
   const Box &domain = geom[lev].Domain();
@@ -338,18 +342,18 @@ void INSSolver::FillPresGhostPhys(int lev, MultiFab &mf) {
         const int bd = bdir;
         const bool dirichlet0 = (kind == BCKind::outflow);
 
-        amrex::ParallelFor(
-            slab, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-              int ijk[3] = {i, j, k};
-              const int idx = ijk[bd];
-              const int m = (s == 0) ? (dlo - idx) : (idx - dhi);
-              int t[3] = {i, j, k};
-              t[bd] = (s == 0) ? (dlo + m - 1) : (dhi - m + 1);
-              const Real pin = a(t[0], t[1], t[2]);
-              // Neumann: ghost = mirror interior.  Dirichlet p=0:
-              // odd reflection so the face value is 0.
-              a(i, j, k) = dirichlet0 ? -pin : pin;
-            });
+        amrex::ParallelFor(slab,
+                           [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                             int ijk[3] = {i, j, k};
+                             const int idx = ijk[bd];
+                             const int m = (s == 0) ? (dlo - idx) : (idx - dhi);
+                             int t[3] = {i, j, k};
+                             t[bd] = (s == 0) ? (dlo + m - 1) : (dhi - m + 1);
+                             const Real pin = a(t[0], t[1], t[2]);
+                             // Neumann: ghost = mirror interior.  Dirichlet
+                             // p=0: odd reflection so the face value is 0.
+                             a(i, j, k) = dirichlet0 ? -pin : pin;
+                           });
       }
     }
   }
@@ -360,6 +364,8 @@ void INSSolver::FillPresGhostPhys(int lev, MultiFab &mf) {
 // ============================================================
 void INSSolver::EnforceVelDirichlet(
     int lev, const std::array<MultiFab *, AMREX_SPACEDIM> &vel) {
+  BL_PROFILE("INSSolver::EnforceVelDirichlet()");
+
   for (int comp = 0; comp < AMREX_SPACEDIM; ++comp)
     FillVelGhostPhys(lev, comp, *vel[comp], /*homogeneous=*/false);
 }

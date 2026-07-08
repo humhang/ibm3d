@@ -19,6 +19,7 @@
 #include "INSSolver.H"
 
 #include <AMReX_Array4.H>
+#include <AMReX_BLProfiler.H>
 #include <AMReX_MFIter.H>
 
 using namespace amrex;
@@ -28,6 +29,8 @@ using namespace amrex;
 // ============================================================
 void INSSolver::ApplyFaceLaplacian(int lev, int dir, const MultiFab &fin,
                                    MultiFab &Lf) {
+  BL_PROFILE("INSSolver::ApplyFaceLaplacian()");
+
   const Real *dx = geom[lev].CellSize();
   const Real dxi2 = 1.0_rt / (dx[0] * dx[0]);
   const Real dyi2 = 1.0_rt / (dx[1] * dx[1]);
@@ -45,11 +48,11 @@ void INSSolver::ApplyFaceLaplacian(int lev, int dir, const MultiFab &fin,
     auto const &f = fin.const_array(mfi);
     auto const &Lfa = Lf.array(mfi);
     amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      Real lap = dxi2 * (f(i + 1, j, k) - 2.0_rt * f(i, j, k) + f(i - 1, j, k)) +
-                 dyi2 * (f(i, j + 1, k) - 2.0_rt * f(i, j, k) + f(i, j - 1, k));
+      Real lap =
+          dxi2 * (f(i + 1, j, k) - 2.0_rt * f(i, j, k) + f(i - 1, j, k)) +
+          dyi2 * (f(i, j + 1, k) - 2.0_rt * f(i, j, k) + f(i, j - 1, k));
 #if AMREX_SPACEDIM == 3
-      lap +=
-          dzi2 * (f(i, j, k + 1) - 2.0_rt * f(i, j, k) + f(i, j, k - 1));
+      lap += dzi2 * (f(i, j, k + 1) - 2.0_rt * f(i, j, k) + f(i, j, k - 1));
 #endif
       Lfa(i, j, k) = lap;
     });
@@ -61,6 +64,8 @@ void INSSolver::ApplyFaceLaplacian(int lev, int dir, const MultiFab &fin,
 // ============================================================
 void INSSolver::ComputePressureGradient(int lev, int dir, const MultiFab &p,
                                         MultiFab &gp) {
+  BL_PROFILE("INSSolver::ComputePressureGradient()");
+
   const Real idx = 1.0_rt / geom[lev].CellSize(dir);
   const IntVect nod = IntVect::TheDimensionVector(dir);
 
@@ -72,18 +77,21 @@ void INSSolver::ComputePressureGradient(int lev, int dir, const MultiFab &p,
     auto const &pa = p.const_array(mfi);
     auto const &gpa = gp.array(mfi);
     if (dir == 0) {
-      amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        gpa(i, j, k) = idx * (pa(i, j, k) - pa(i - 1, j, k));
-      });
+      amrex::ParallelFor(bx,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           gpa(i, j, k) = idx * (pa(i, j, k) - pa(i - 1, j, k));
+                         });
     } else if (dir == 1) {
-      amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        gpa(i, j, k) = idx * (pa(i, j, k) - pa(i, j - 1, k));
-      });
+      amrex::ParallelFor(bx,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           gpa(i, j, k) = idx * (pa(i, j, k) - pa(i, j - 1, k));
+                         });
 #if AMREX_SPACEDIM == 3
     } else {
-      amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-        gpa(i, j, k) = idx * (pa(i, j, k) - pa(i, j, k - 1));
-      });
+      amrex::ParallelFor(bx,
+                         [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           gpa(i, j, k) = idx * (pa(i, j, k) - pa(i, j, k - 1));
+                         });
 #endif
     }
   }
@@ -107,6 +115,8 @@ void INSSolver::ComputePressureGradient(int lev, int dir, const MultiFab &p,
 // ============================================================
 void INSSolver::ApplyBNFace(int lev, int dir, const MultiFab &src,
                             MultiFab &dst) {
+  BL_PROFILE("INSSolver::ApplyBNFace()");
+
   const Real eps = 0.5_rt * m_nu * m_dt;
   const int N = m_cn_order;
 
@@ -144,6 +154,8 @@ void INSSolver::ApplyCNDiffusion(
     int lev, const std::array<MultiFab *, AMREX_SPACEDIM> &vstar,
     const std::array<const MultiFab *, AMREX_SPACEDIM> &u_n,
     const std::array<const MultiFab *, AMREX_SPACEDIM> &adv) {
+  BL_PROFILE("INSSolver::ApplyCNDiffusion()");
+
   const Real eps = 0.5_rt * m_nu * m_dt;
 
   const BoxArray &ba = grids[lev];

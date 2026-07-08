@@ -7,6 +7,7 @@
 
 #include "INSSolver.H"
 
+#include <AMReX_BLProfiler.H>
 #include <AMReX_FillPatchUtil.H>
 #include <AMReX_Interpolater.H>
 #include <AMReX_MultiFabUtil.H>
@@ -27,6 +28,8 @@ using namespace amrex;
 // Construction
 // ============================================================
 INSSolver::INSSolver() {
+  BL_PROFILE("INSSolver::INSSolver()");
+
   ReadParameters();
   InitializeIBGeometry();
   ParseBCs();
@@ -101,6 +104,8 @@ void INSSolver::InitData() {
 }
 
 void INSSolver::Run() {
+  BL_PROFILE("INSSolver::Run()");
+
   for (m_step = 1; m_step <= m_max_step && m_cur_time < m_t_stop; ++m_step) {
     ComputeDt();
     if (m_cur_time + m_dt > m_t_stop)
@@ -140,6 +145,8 @@ void INSSolver::Run() {
 // ComputeDt — advective CFL plus Neumann-series stability cap
 // ============================================================
 void INSSolver::ComputeDt() {
+  BL_PROFILE("INSSolver::ComputeDt()");
+
   // ---- Advective CFL (∞ when the field is at rest) ----
   // Use the multidimensional unsplit bound Σ |u_d|/dx_d.  Prescribed
   // Dirichlet velocities are included explicitly because moving-wall
@@ -213,12 +220,16 @@ void INSSolver::ComputeDt() {
 void INSSolver::MakeNewLevelFromScratch(int lev, Real /*time*/,
                                         const BoxArray &ba,
                                         const DistributionMapping &dm) {
+  BL_PROFILE("INSSolver::MakeNewLevelFromScratch()");
+
   AllocateLevelStorage(lev, ba, dm);
   InitFlowField(lev);
 }
 
 void INSSolver::MakeNewLevelFromCoarse(int lev, Real time, const BoxArray &ba,
                                        const DistributionMapping &dm) {
+  BL_PROFILE("INSSolver::MakeNewLevelFromCoarse()");
+
   AllocateLevelStorage(lev, ba, dm);
 
   PhysBCFunctNoOp bc_func;
@@ -239,6 +250,8 @@ void INSSolver::MakeNewLevelFromCoarse(int lev, Real time, const BoxArray &ba,
 
 void INSSolver::RemakeLevel(int lev, Real time, const BoxArray &ba,
                             const DistributionMapping &dm) {
+  BL_PROFILE("INSSolver::RemakeLevel()");
+
   // Stash current data; rebuild storage with the new layout; then FillPatch
   // from the old data (and the coarse level, for newly-exposed regions).
   FaceMFArray old_vel;
@@ -286,6 +299,8 @@ void INSSolver::ClearLevel(int lev) {
 // ============================================================
 void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
                                      const DistributionMapping &dm) {
+  BL_PROFILE("INSSolver::AllocateLevelStorage()");
+
   constexpr int nghost_vel = 2;
   constexpr int nghost_pre = 1;
 
@@ -330,6 +345,8 @@ void INSSolver::SyncFillICGhosts(int lev) {
 // InitFlowField — 3D Taylor–Green vortex (or 2D fallback)
 // ============================================================
 void INSSolver::InitFlowField(int lev) {
+  BL_PROFILE("INSSolver::InitFlowField()");
+
   const Geometry &gm = geom[lev];
   const Real *dx = gm.CellSize();
   const Real *plo = gm.ProbLo();
@@ -462,6 +479,8 @@ void INSSolver::InitFlowField(int lev) {
 // Advance — single time step across all levels (no subcycling)
 // ============================================================
 void INSSolver::Advance() {
+  BL_PROFILE("INSSolver::Advance()");
+
   const Real time = m_cur_time;
 
   // ---- 1) Build u* on every level ----
@@ -530,6 +549,8 @@ void INSSolver::Advance() {
 // ============================================================
 void INSSolver::FillFacePatch(int lev, int dir, Vector<FaceMFArray> &source,
                               MultiFab &dst, Real time) {
+  BL_PROFILE("INSSolver::FillFacePatch()");
+
   PhysBCFunctNoOp bc_func;
   if (lev == 0) {
     Vector<MultiFab *> smf{source[lev][dir].get()};
@@ -556,6 +577,8 @@ void INSSolver::FillCellPatch(int lev,
                               Vector<std::unique_ptr<MultiFab>> &source,
                               MultiFab &dst, Real time,
                               const Vector<BCRec> &bcs) {
+  BL_PROFILE("INSSolver::FillCellPatch()");
+
   PhysBCFunctNoOp bc_func;
   if (lev == 0) {
     Vector<MultiFab *> smf{source[lev].get()};
@@ -587,6 +610,8 @@ void INSSolver::FillCellPatch(int lev,
 // Average-down — fine→coarse sync of overlap
 // ============================================================
 void INSSolver::AverageDownVelocity(Vector<FaceMFArray> &v) {
+  BL_PROFILE("INSSolver::AverageDownVelocity()");
+
   for (int lev = finest_level - 1; lev >= 0; --lev) {
     Array<const MultiFab *, AMREX_SPACEDIM> fine;
     Array<MultiFab *, AMREX_SPACEDIM> crse;
@@ -599,6 +624,8 @@ void INSSolver::AverageDownVelocity(Vector<FaceMFArray> &v) {
 }
 
 void INSSolver::AverageDownPressure() {
+  BL_PROFILE("INSSolver::AverageDownPressure()");
+
   for (int lev = finest_level - 1; lev >= 0; --lev) {
     amrex::average_down(*m_pressure[lev + 1], *m_pressure[lev], 0, 1,
                         ref_ratio[lev]);
@@ -609,6 +636,8 @@ void INSSolver::AverageDownPressure() {
 // Tagging — refine where |ω| > threshold
 // ============================================================
 void INSSolver::ComputeCellCenteredVorticityMag(int lev, MultiFab &vortmag) {
+  BL_PROFILE("INSSolver::ComputeCellCenteredVorticityMag()");
+
   // Need 1 ghost on velocity to take centred differences at cell centres.
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
@@ -671,6 +700,8 @@ void INSSolver::ComputeCellCenteredVorticityMag(int lev, MultiFab &vortmag) {
 
 void INSSolver::ErrorEst(int lev, TagBoxArray &tags, Real /*time*/,
                          int /*ngrow*/) {
+  BL_PROFILE("INSSolver::ErrorEst()");
+
   if (m_refine_vort > 0.0) {
     MultiFab vortmag(grids[lev], dmap[lev], 1, 0);
     vortmag.setVal(0.0);
@@ -697,6 +728,8 @@ void INSSolver::ErrorEst(int lev, TagBoxArray &tags, Real /*time*/,
 // Plotfile — multi-level, cell-centred derived fields
 // ============================================================
 void INSSolver::WritePlotFile() {
+  BL_PROFILE("INSSolver::WritePlotFile()");
+
   const int nout = AMREX_SPACEDIM + 2; // velocities + pressure + |ω|
 
   Vector<MultiFab> mfout(finest_level + 1);
@@ -765,6 +798,8 @@ void INSSolver::WritePlotFile() {
 // Diagnostics
 // ============================================================
 Real INSSolver::ComputeMaxVelocity() const {
+  BL_PROFILE("INSSolver::ComputeMaxVelocity()");
+
   Real m = 0.0;
   for (int lev = 0; lev <= finest_level; ++lev) {
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -776,6 +811,8 @@ Real INSSolver::ComputeMaxVelocity() const {
 }
 
 Real INSSolver::ComputeMaxDivergence() const {
+  BL_PROFILE("INSSolver::ComputeMaxDivergence()");
+
   Real m = 0.0;
   for (int lev = 0; lev <= finest_level; ++lev) {
     const Real *dx = geom[lev].CellSize();
@@ -818,6 +855,8 @@ Real INSSolver::ComputeMaxDivergence() const {
 // (level 0; periodic verification case only)
 // ============================================================
 void INSSolver::ComputeTG2DError(Real time, Real &l2, Real &linf) const {
+  BL_PROFILE("INSSolver::ComputeTG2DError()");
+
   const int lev = 0;
   const Real *dx = geom[lev].CellSize();
   const Real *plo = geom[lev].ProbLo();
@@ -865,6 +904,8 @@ void INSSolver::ComputeTG2DError(Real time, Real &l2, Real &linf) const {
 //   self-convergence dump/compare.  Called once after the time loop.
 // ============================================================
 void INSSolver::WriteTG2DDiagnostics() const {
+  BL_PROFILE("INSSolver::WriteTG2DDiagnostics()");
+
   Real l2 = 0.0, linf = 0.0;
   ComputeTG2DError(m_cur_time, l2, linf);
   Print() << "TG2D-ERROR  ncell=" << geom[0].Domain().length(0)
