@@ -5,14 +5,14 @@ import math
 from pathlib import Path
 
 
-XC = 2.0
+XC = 0.0
 YC = 0.0
 DIAMETER = 1.0
 RADIUS = 0.5 * DIAMETER
 
-# With finest dx = D / 20, this gives ds ~= 2.6 dx. The current
+# With finest dx = D / 80, this gives ds ~= 2.6 dx. The current
 # unpreconditioned coupled IB solve is sensitive to over-dense markers.
-N_SEGMENTS = 24
+N_SEGMENTS = 96
 
 
 def main():

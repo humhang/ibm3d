@@ -5,17 +5,17 @@ import math
 from pathlib import Path
 
 
-XC = 1.5
+XC = 0.0
 YC = 0.0
 ZC = 0.0
 DIAMETER = 1.0
 RADIUS = 0.5 * DIAMETER
 
-# With finest dx = D / 20, equatorial and meridional panel lengths are
+# With finest dx = D / 80, equatorial and meridional panel lengths are
 # about 5.2 finest cells. The current unpreconditioned coupled IB solve is
 # sensitive to over-dense markers.
-N_THETA = 12
-N_PHI = 6
+N_THETA = 48
+N_PHI = 24
 
 
 def point(theta, phi):
@@ -76,7 +76,7 @@ def main():
 
     out = Path(__file__).with_name("sphere.stl")
     with out.open("w", encoding="ascii") as fh:
-        fh.write("solid sphere_re100_d1_12x6\n")
+        fh.write("solid sphere_re100_d1_48x24\n")
         for tri in triangles:
             nx, ny, nz = normal(*tri)
             fh.write(f"  facet normal {nx:.17g} {ny:.17g} {nz:.17g}\n")
@@ -85,7 +85,7 @@ def main():
                 fh.write(f"      vertex {x:.17g} {y:.17g} {z:.17g}\n")
             fh.write("    endloop\n")
             fh.write("  endfacet\n")
-        fh.write("endsolid sphere_re100_d1_12x6\n")
+        fh.write("endsolid sphere_re100_d1_48x24\n")
 
     equator_chord = 2.0 * RADIUS * math.sin(math.pi / N_THETA)
     meridional = math.pi * RADIUS / N_PHI

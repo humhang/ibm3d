@@ -146,7 +146,7 @@ run).  CodeLLDB is auto-installed on first use.
 | `tests/2d/tg2d_amr/inputs.tg2d_amr`       | Native 2D AMR Taylor–Green verification.                   |
 | `tests/2d/ib_square/inputs.ib_square`     | Native 2D coupled IB projection smoke test.                |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR.   |
-| `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D flow past a stationary cylinder, Re_D=100, finest D/dx=20. |
+| `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D AMR flow past a stationary cylinder, Re_D=100, finest D/dx=80. |
 | `tests/3d/tg/inputs.tg`                   | Single-level smoke test (32³, periodic, Taylor–Green).     |
 | `tests/3d/tg_amr/inputs.tg_amr`           | 2-level AMR per-level Perot path + regrid + FillPatch.     |
 | `tests/3d/tg2d/inputs.tg2d`               | Thin-periodic-z 2D Taylor–Green verification for 3D builds.|
@@ -156,7 +156,7 @@ run).  CodeLLDB is auto-installed on first use.
 | `tests/3d/ib_plane/inputs.ib_plane`       | Single-level coupled IB projection smoke test.             |
 | `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection with AMR tagging.     |
 | `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel flow past a stationary cylindrical IB surface. |
-| `tests/3d/ib_sphere_re100/inputs.ib_sphere_re100` | 3D flow past a stationary sphere, Re_D=100, finest D/dx=20. |
+| `tests/3d/ib_sphere_re100/inputs.ib_sphere_re100` | 3D AMR flow past a stationary sphere, Re_D=100, finest D/dx=80. |
 
 Taylor–Green expectation: `|div u|_∞ ~ 10⁻¹¹` per step (Krylov-tolerance
 dominated), monotonic energy decay.  Any drift is a regression.

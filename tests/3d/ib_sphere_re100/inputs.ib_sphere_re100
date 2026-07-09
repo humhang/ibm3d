@@ -3,10 +3,11 @@
 #
 # Canonical uniform-inflow IB case:
 #   Re_D = U_inf D / nu = 1 * 1 / 0.01 = 100
-#   sphere center = (1.5, 0, 0), diameter D = 1
-#   dx = 0.05
-#   finest resolution D / dx = 20 on the single level
-#   STL panel length is about 0.2588 = 5.18 finest cells near the equator
+#   sphere center = (0, 0, 0), radius R = 0.5, diameter D = 1
+#   domain x = [-5D, 15D], y,z = [-15D, 15D]
+#   level-0 dx = 0.1, refinement ratios = 2 2 2
+#   finest dx = 0.0125, finest resolution D / dx = 80
+#   STL panel length is about 0.0654 = 5.23 finest cells near the equator
 #
 # Regenerate the STL with:
 #   python3 tests/3d/ib_sphere_re100/generate_sphere_stl.py
@@ -16,16 +17,19 @@
 # ============================================================
 
 # ---- Domain ----
-geometry.prob_lo     =  0.0  -1.2  -1.2
-geometry.prob_hi     =  4.8   1.2   1.2
+geometry.prob_lo     =  -5.0  -15.0  -15.0
+geometry.prob_hi     =  15.0   15.0   15.0
 geometry.is_periodic =  0  0  0
 
 # ---- Grid ----
-amr.n_cell           =  96  48  48
-amr.max_level        =  0
+amr.n_cell           =  200  300  300
+amr.max_level        =  3
+amr.ref_ratio        =  2  2  2
 amr.blocking_factor  =  4
-amr.max_grid_size    =  32
+amr.max_grid_size    =  64
 amr.v                =  1
+amr.n_error_buf      =  4
+amr.grid_eff         =  0.7
 
 # ---- Boundary conditions ----
 ins.bc_xlo = inflow
@@ -45,6 +49,7 @@ ins.t_stop           =  20.0
 ins.max_step         =  5000
 ins.plot_int         =  100
 ins.cn_order         =  2
+ins.regrid_int       =  5
 ins.poisson_tol      =  1.0e-4
 ins.poisson_max_iter =  4000
 ins.verbose          =  2
