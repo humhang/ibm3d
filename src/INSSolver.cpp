@@ -824,6 +824,14 @@ Real INSSolver::ComputeMaxDivergence() const {
 
     MultiFab div(grids[lev], dmap[lev], 1, 0);
     div.setVal(0.0);
+    iMultiFab active_mask(grids[lev], dmap[lev], 1, 0);
+    active_mask.setVal(1);
+    if (lev < finest_level) {
+      BoxArray covered = grids[lev + 1];
+      covered.coarsen(ref_ratio[lev]);
+      for (int i = 0; i < covered.size(); ++i)
+        active_mask.setVal(0, covered[i], 0, 1, 0);
+    }
 
     for (MFIter mfi(div, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
       const Box &bx = mfi.tilebox();
@@ -833,8 +841,13 @@ Real INSSolver::ComputeMaxDivergence() const {
       auto const &w = m_vel[lev][2]->const_array(mfi);
 #endif
       auto const &dv = div.array(mfi);
+      auto const &mask = active_mask.const_array(mfi);
       amrex::ParallelFor(bx,
                          [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                           if (mask(i, j, k) == 0) {
+                             dv(i, j, k) = 0.0_rt;
+                             return;
+                           }
                            Real d = idx * (u(i + 1, j, k) - u(i, j, k)) +
                                     idy * (v(i, j + 1, k) - v(i, j, k));
 #if AMREX_SPACEDIM == 3

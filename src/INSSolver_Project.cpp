@@ -130,6 +130,13 @@ void vector_saxpy_project(std::vector<Real> &dst, Real a,
     dst[i] += a * x[i];
 }
 
+void vector_lincomb_project(std::vector<Real> &dst, Real a,
+                            const std::vector<Real> &x, Real b,
+                            const std::vector<Real> &y) {
+  for (std::size_t i = 0; i < dst.size(); ++i)
+    dst[i] = a * x[i] + b * y[i];
+}
+
 void vector_scale_project(std::vector<Real> &dst, Real a) {
   for (Real &value : dst)
     value *= a;
@@ -140,6 +147,10 @@ Real dot_coupled_composite(const Vector<std::unique_ptr<MultiFab>> &a_p,
                            const Vector<std::unique_ptr<MultiFab>> &b_p,
                            const std::vector<Real> &b_ib) {
   return dot_composite(a_p, b_p) + vector_dot_project(a_ib, b_ib);
+}
+
+Real norm2_vector_project(const std::vector<Real> &a) {
+  return vector_dot_project(a, a);
 }
 
 void scale_coupled_composite(Vector<std::unique_ptr<MultiFab>> &p,
@@ -717,17 +728,6 @@ int INSSolver::SolveCompositeIBProjection(
     subtract_composite_mean(p, active_masks);
   }
 
-  // Use the old block solve only as a warm start; the accepted residual and
-  // correction are checked with the composite hierarchy operator below.
-  const int saved_verbose = m_verbose;
-  m_verbose = 0;
-  for (int lev = 0; lev < finest_level; ++lev)
-    SolveModifiedPoisson(lev, *p[lev], *rhs_p[lev]);
-  SolveIBProjection(finest_level, *p[finest_level], *rhs_p[finest_level],
-                    rhs_ib);
-  m_verbose = saved_verbose;
-  AverageDownPressure();
-
   const Real rhs_norm2 =
       dot_composite(rhs_p, rhs_p) + vector_dot_project(rhs_ib, rhs_ib);
   const Real rhs_norm = std::sqrt(std::max(rhs_norm2, Real(1.0e-300)));
@@ -753,6 +753,44 @@ int INSSolver::SolveCompositeIBProjection(
   copy_composite_unmasked(best_p, p);
   std::vector<Real> best_ib = m_ib_force;
   Real best_resid = resid;
+
+  if (m_pressure_singular) {
+    Vector<std::unique_ptr<MultiFab>> cold_p;
+    define_composite_like(cold_p, p, 1);
+    copy_composite_unmasked(cold_p, p);
+    const std::vector<Real> cold_force = m_ib_force;
+    const Real cold_resid = resid;
+
+    const int saved_verbose = m_verbose;
+    m_verbose = 0;
+    for (int lev = 0; lev < finest_level; ++lev)
+      SolveModifiedPoisson(lev, *p[lev], *rhs_p[lev]);
+    SolveIBProjection(finest_level, *p[finest_level], *rhs_p[finest_level],
+                      rhs_ib);
+    m_verbose = saved_verbose;
+    AverageDownPressure();
+
+    ApplyCompositeIBSchurOp(p, m_ib_force, Ax_p, Ax_ib, active_masks);
+    lincomb_composite(rr_p, 1.0_rt, rhs_p, -1.0_rt, Ax_p, active_masks);
+    for (std::size_t i = 0; i < rr_ib.size(); ++i)
+      rr_ib[i] = rhs_ib[i] - Ax_ib[i];
+    resid2 = dot_coupled_composite(rr_p, rr_ib, rr_p, rr_ib);
+    resid = std::sqrt(std::max(resid2, Real(0.0)));
+
+    if (std::isfinite(resid) && resid < best_resid) {
+      copy_composite_unmasked(best_p, p);
+      best_ib = m_ib_force;
+      best_resid = resid;
+    } else {
+      copy_composite_unmasked(p, cold_p);
+      m_ib_force = cold_force;
+      resid = cold_resid;
+      ApplyCompositeIBSchurOp(p, m_ib_force, Ax_p, Ax_ib, active_masks);
+      lincomb_composite(rr_p, 1.0_rt, rhs_p, -1.0_rt, Ax_p, active_masks);
+      for (std::size_t i = 0; i < rr_ib.size(); ++i)
+        rr_ib[i] = rhs_ib[i] - Ax_ib[i];
+    }
+  }
 
   const int restart = std::min(100, std::max(1, m_poisson_max_iter));
   std::vector<Vector<std::unique_ptr<MultiFab>>> Vp(restart + 1);
@@ -891,8 +929,164 @@ int INSSolver::SolveCompositeIBProjection(
     converged = resid <= tol;
   }
 
+  Vector<std::unique_ptr<MultiFab>> zero_p, force_p, rhs_pressure;
+  define_composite_like(zero_p, p, 1);
+  define_composite_like(force_p, p, 0);
+  define_composite_like(rhs_pressure, rhs_p, 0);
+  std::vector<Real> force_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> zero_force(rhs_ib.size(), 0.0_rt);
+
+  const auto apply_force_block = [&](const std::vector<Real> &force,
+                                     std::vector<Real> &result) {
+    ApplyCompositeIBSchurOp(zero_p, force, force_p, result, active_masks);
+  };
+
+  const auto solve_force_block = [&](const std::vector<Real> &rhs_force) {
+    std::vector<Real> Ax(rhs_force.size(), 0.0_rt);
+    std::vector<Real> rr(rhs_force.size(), 0.0_rt);
+    std::vector<Real> rhat(rhs_force.size(), 0.0_rt);
+    std::vector<Real> pv(rhs_force.size(), 0.0_rt);
+    std::vector<Real> vv(rhs_force.size(), 0.0_rt);
+    std::vector<Real> ss(rhs_force.size(), 0.0_rt);
+    std::vector<Real> tt(rhs_force.size(), 0.0_rt);
+
+    apply_force_block(m_ib_force, Ax);
+    for (std::size_t i = 0; i < rr.size(); ++i)
+      rr[i] = rhs_force[i] - Ax[i];
+    rhat = rr;
+
+    const Real rhs_force_norm2 =
+        std::max(norm2_vector_project(rhs_force), Real(1.0e-300));
+    const Real tol2 = m_poisson_tol * m_poisson_tol * rhs_force_norm2;
+    Real rsold = norm2_vector_project(rr);
+
+    Real rho = 1.0_rt;
+    Real alpha = 1.0_rt;
+    Real omega = 1.0_rt;
+    int force_iter = 0;
+    for (; force_iter < m_poisson_max_iter; ++force_iter) {
+      if (rsold < tol2 || !std::isfinite(rsold))
+        break;
+
+      const Real rho_new = vector_dot_project(rhat, rr);
+      if (std::abs(rho_new) < tiny)
+        break;
+      const Real beta = (rho_new / rho) * (alpha / omega);
+
+      vector_lincomb_project(pv, 1.0_rt, pv, -omega, vv);
+      vector_lincomb_project(pv, beta, pv, 1.0_rt, rr);
+
+      apply_force_block(pv, vv);
+      const Real rhatv = vector_dot_project(rhat, vv);
+      if (std::abs(rhatv) < tiny)
+        break;
+      alpha = rho_new / rhatv;
+
+      vector_lincomb_project(ss, 1.0_rt, rr, -alpha, vv);
+      const Real s2 = norm2_vector_project(ss);
+      if (s2 < tol2) {
+        vector_saxpy_project(m_ib_force, alpha, pv);
+        rsold = s2;
+        ++force_iter;
+        break;
+      }
+
+      apply_force_block(ss, tt);
+      const Real t2 = norm2_vector_project(tt);
+      if (t2 <= tiny)
+        break;
+      omega = vector_dot_project(tt, ss) / t2;
+
+      vector_saxpy_project(m_ib_force, alpha, pv);
+      vector_saxpy_project(m_ib_force, omega, ss);
+
+      vector_lincomb_project(rr, 1.0_rt, ss, -omega, tt);
+      rho = rho_new;
+      rsold = norm2_vector_project(rr);
+      if (std::abs(omega) < tiny)
+        break;
+    }
+    return force_iter;
+  };
+
+  ApplyCompositeIBSchurOp(p, m_ib_force, Ax_p, Ax_ib, active_masks);
+  lincomb_composite(rr_p, 1.0_rt, rhs_p, -1.0_rt, Ax_p, active_masks);
+  for (std::size_t i = 0; i < rr_ib.size(); ++i)
+    rr_ib[i] = rhs_ib[i] - Ax_ib[i];
+  const Real pre_block_pressure_relres =
+      std::sqrt(dot_composite(rr_p, rr_p) /
+                std::max(dot_composite(rhs_p, rhs_p), Real(1.0e-300)));
+
+  int block_iters = 0;
+  if (!converged && pre_block_pressure_relres > m_poisson_tol) {
+    // Cheap block cleanup after coupled GMRES breaks down.  This is not the
+    // exact eliminated Schur complement; it only prevents a bad force iterate
+    // from leaving a large pressure/divergence residual behind.
+    for (; block_iters < 4; ++block_iters) {
+      ApplyCompositeIBSchurOp(p, zero_force, Ax_p, Ax_ib, active_masks);
+      std::vector<Real> rhs_force(rhs_ib.size(), 0.0_rt);
+      for (std::size_t i = 0; i < rhs_force.size(); ++i)
+        rhs_force[i] = rhs_ib[i] - Ax_ib[i];
+      solve_force_block(rhs_force);
+
+      ApplyCompositeIBSchurOp(zero_p, m_ib_force, force_p, force_ib,
+                              active_masks);
+      lincomb_composite(rhs_pressure, 1.0_rt, rhs_p, -1.0_rt, force_p,
+                        active_masks);
+      const int saved_verbose = m_verbose;
+      m_verbose = 0;
+      SolveCompositeModifiedPoisson(p, rhs_pressure, active_masks);
+      m_verbose = saved_verbose;
+
+      ApplyCompositeIBSchurOp(p, m_ib_force, Ax_p, Ax_ib, active_masks);
+      lincomb_composite(rr_p, 1.0_rt, rhs_p, -1.0_rt, Ax_p, active_masks);
+      for (std::size_t i = 0; i < rr_ib.size(); ++i)
+        rr_ib[i] = rhs_ib[i] - Ax_ib[i];
+      resid2 = dot_coupled_composite(rr_p, rr_ib, rr_p, rr_ib);
+      resid = std::sqrt(std::max(resid2, Real(0.0)));
+      if (std::isfinite(resid) && resid < best_resid) {
+        copy_composite_unmasked(best_p, p);
+        best_ib = m_ib_force;
+        best_resid = resid;
+      }
+      if (std::isfinite(resid) && resid <= tol) {
+        converged = true;
+        break;
+      }
+    }
+  }
+
+  if (!converged && std::isfinite(best_resid) && best_resid < resid) {
+    copy_composite_unmasked(p, best_p);
+    m_ib_force = best_ib;
+    resid = best_resid;
+    if (m_pressure_singular)
+      subtract_composite_mean(p, active_masks);
+  }
+
+  ApplyCompositeIBSchurOp(p, m_ib_force, Ax_p, Ax_ib, active_masks);
+  lincomb_composite(rr_p, 1.0_rt, rhs_p, -1.0_rt, Ax_p, active_masks);
+  for (std::size_t i = 0; i < rr_ib.size(); ++i)
+    rr_ib[i] = rhs_ib[i] - Ax_ib[i];
+  const Real final_p_resid2 = dot_composite(rr_p, rr_p);
+  const Real final_ib_resid2 = norm2_vector_project(rr_ib);
+  resid = std::sqrt(std::max(final_p_resid2 + final_ib_resid2, Real(0.0)));
+  converged = std::isfinite(resid) && resid <= tol;
+
   if (!converged) {
     const Real relres = resid / rhs_norm;
+    const Real rhs_p_norm2 = dot_composite(rhs_p, rhs_p);
+    const Real rhs_ib_norm2 = norm2_vector_project(rhs_ib);
+    const Real abs_p = std::sqrt(std::max(final_p_resid2, Real(0.0)));
+    const Real abs_ib = std::sqrt(std::max(final_ib_resid2, Real(0.0)));
+    const Real rhs_p_norm = std::sqrt(std::max(rhs_p_norm2, Real(0.0)));
+    const Real rhs_ib_norm = std::sqrt(std::max(rhs_ib_norm2, Real(0.0)));
+    const Real relres_p = abs_p / std::max(rhs_p_norm, Real(1.0e-300));
+    const Real relres_ib =
+        (rhs_ib_norm > Real(1.0e-300))
+            ? abs_ib / rhs_ib_norm
+            : (abs_ib == Real(0.0) ? Real(0.0)
+                                   : std::numeric_limits<Real>::infinity());
     std::ostringstream msg;
     msg << "Composite IB projection solve";
     if (breakdown != nullptr) {
@@ -908,7 +1102,10 @@ int INSSolver::SolveCompositeIBProjection(
         << ", markers = " << m_ib_geometry.markers.size()
         << ", constraints = " << rhs_ib.size()
         << ", pressure_singular = " << m_pressure_singular
-        << ", relres = " << relres << ").";
+        << ", relres = " << relres << ", pressure_relres = " << relres_p
+        << ", ib_relres = " << relres_ib << ", |r_p| = " << abs_p
+        << ", |rhs_p| = " << rhs_p_norm << ", |r_ib| = " << abs_ib
+        << ", |rhs_ib| = " << rhs_ib_norm << ").";
     amrex::Warning(msg.str());
   }
 
@@ -1046,6 +1243,7 @@ void INSSolver::ProjectPerot() {
 
   AverageDownPressure();
 
+  Vector<FaceMFArray> projection_correction(nlev);
   for (int lev = 0; lev < nlev; ++lev) {
     const BoxArray &ba = grids[lev];
     const DistributionMapping &dm = dmap[lev];
@@ -1059,11 +1257,10 @@ void INSSolver::ProjectPerot() {
     MultiFab phi_g(ba, dm, 1, 1);
     FillCellPatch(lev, m_pressure, phi_g, m_cur_time, m_bc_pres);
 
-    std::array<MultiFab *, AMREX_SPACEDIM> vel_out;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
       BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
       MultiFab gp(fba, dm, 1, 2);
-      MultiFab bgp(fba, dm, 1, 0);
+      projection_correction[lev][d] = std::make_unique<MultiFab>(fba, dm, 1, 0);
 
       gp.setVal(0.0);
       ComputePressureGradient(lev, d, phi_g, gp);
@@ -1073,10 +1270,19 @@ void INSSolver::ProjectPerot() {
         MultiFab::Add(gp, hf, 0, 0, 1, 0);
       }
 
-      ApplyBNFace(lev, d, gp, bgp);
+      ApplyBNFace(lev, d, gp, *projection_correction[lev][d]);
+    }
+  }
 
+  AverageDownVelocity(projection_correction);
+
+  for (int lev = 0; lev < nlev; ++lev) {
+    const bool use_ib_on_level = use_ib && lev == finest_level;
+    std::array<MultiFab *, AMREX_SPACEDIM> vel_out;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
       MultiFab::Copy(*m_vel[lev][d], *m_vstar[lev][d], 0, 0, 1, 0);
-      MultiFab::Saxpy(*m_vel[lev][d], -m_dt, bgp, 0, 0, 1, 0);
+      MultiFab::Saxpy(*m_vel[lev][d], -m_dt, *projection_correction[lev][d], 0,
+                      0, 1, 0);
       vel_out[d] = m_vel[lev][d].get();
     }
 
