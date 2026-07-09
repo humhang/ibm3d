@@ -4,8 +4,9 @@
 # Canonical uniform-inflow IB case:
 #   Re_D = U_inf D / nu = 1 * 1 / 0.01 = 100
 #   sphere center = (0, 0, 0), radius R = 0.5, diameter D = 1
-#   domain x = [-5D, 15D], y,z = [-15D, 15D]
+#   domain x = [-4.8D, 14.4D], y,z = [-14.4D, 14.4D]
 #   level-0 dx = 0.1, refinement ratios = 2 2 2
+#   base grid = 192 x 288 x 288, divisible by the 32-cell blocking factor
 #   finest dx = 0.0125, finest resolution D / dx = 80
 #   STL panel length is about 0.0654 = 5.23 finest cells near the equator
 #
@@ -17,15 +18,15 @@
 # ============================================================
 
 # ---- Domain ----
-geometry.prob_lo     =  -5.0  -15.0  -15.0
-geometry.prob_hi     =  15.0   15.0   15.0
+geometry.prob_lo     =  -4.8  -14.4  -14.4
+geometry.prob_hi     =  14.4   14.4   14.4
 geometry.is_periodic =  0  0  0
 
 # ---- Grid ----
-amr.n_cell           =  200  300  300
+amr.n_cell           =  192  288  288
 amr.max_level        =  3
 amr.ref_ratio        =  2  2  2
-amr.blocking_factor  =  4
+amr.blocking_factor  =  32
 amr.max_grid_size    =  64
 amr.v                =  1
 amr.n_error_buf      =  4
