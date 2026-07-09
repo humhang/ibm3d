@@ -2,9 +2,9 @@
 # inputs.ib_cylinder_channel — channel flow past a stationary cylinder
 #
 # This is a more geometric IB smoke case built from tests/3d/channel.
-# The current coupled IB projection is still the local unpreconditioned
-# BiCGStab path, so this case deliberately uses an IB panel size near
-# 1.5 * dx instead of a finer body mesh.
+# The current coupled IB projection is still local and unpreconditioned,
+# so this case deliberately uses an IB panel size near 1.5 * dx instead
+# of a finer body mesh.
 #
 # Geometry:
 #   cylinder center  = (1.0, 0.5), z-axis
@@ -15,7 +15,7 @@
 #   IB panel sizes   = chord 0.09567, axial 0.08333
 #
 # Expected one-step smoke output with ins.verbose=2:
-#   IB BiCGStab lev 0: O(200) iters at 1e-4 relative residual
+#   Composite IB GMRES(...): O(100-300) iters at about 1e-4 relative residual
 #   |E u - U_ib|_inf = O(1e-3)
 #   |div u|_inf      = O(1e-4)
 #

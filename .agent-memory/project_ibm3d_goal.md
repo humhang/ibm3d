@@ -28,11 +28,12 @@ Taira–Colonius IB projection path is in place on the finest AMR level.
   `IBGeometry` owns host/device points, elements, and element-centroid
   markers using AMReX `GpuArray` records; marker weights are line length
   in 2D or triangle area in 3D.
-- The coupled finest-level projection solves `[-D; E] B^N [G H] [p; f]`
-  with the existing matrix-free BiCGStab path.  `H` spreads force
-  components to matching MAC faces and `E` interpolates with
-  marker-centred finite-support kernels, owner masks, and atomics to
-  avoid double-counting shared patch faces.
+- The coupled AMR IB projection solves a composite hierarchy system
+  `[-D; E] B^N [G H] [p; f]` with local restarted GMRES, warm-started by
+  the older block solve.  `H` spreads force components to matching MAC
+  faces only on the finest level and `E` interpolates finest-level face
+  corrections with marker-centred finite-support kernels, owner masks,
+  and atomics to avoid double-counting shared patch faces.
 - Verified on 3D Taylor–Green vortex: `|div u|_∞ ~ 10⁻¹¹` per step at
   single level *and* at 2 AMR levels (Krylov tolerance dominated, not
   method error), monotonic energy decay matching the previous
@@ -53,8 +54,8 @@ with device copies, element-centroid markers in `IBGeometry`, Peskin
 4-point spread/interp, GPU-ready finest-level IB tagging, and the
 coupled projection in `ProjectPerot`.  The Tpetra/Belos wrapper and
 MLMG preconditioner are still future work; the initial path deliberately
-reuses the local BiCGStab solver so the operator is executable
-immediately.
+uses a local restarted-GMRES solver, warm-started by the older block
+solve, so the operator is executable immediately.
 
 **How to apply:** keep the Perot `B^N` consistency across predictor,
 Schur operator, and projection.  IB coupling currently belongs on the

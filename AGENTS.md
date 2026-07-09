@@ -7,10 +7,11 @@ Guidelines for any agent (human or AI) contributing to **ibm3d**.
 `ibm3d` is in the first **immersed-boundary projection** phase.  The
 pure incompressible Navier–Stokes substrate is working, and the initial
 Taira–Colonius IB path now loads geometry, builds element-centroid
-markers, and solves the coupled finest-level projection for prescribed
-IB velocity.  The longer-term linear-algebra direction is still
-matrix-free `Tpetra::Operator` with AMReX `MLMG` as the preconditioner;
-the current executable coupled path uses the local BiCGStab machinery.
+markers, and solves the coupled projection for prescribed IB velocity.
+The longer-term linear-algebra direction is still matrix-free
+`Tpetra::Operator` with AMReX `MLMG` as the preconditioner; the current
+executable coupled AMR path uses local restarted GMRES with a block
+warm start.
 
 Key decisions already settled, do not re-litigate:
 
@@ -22,11 +23,11 @@ Key decisions already settled, do not re-litigate:
   `(D B^N G) p^{n+1} = (1/dt) D u*`, projection
   `u^{n+1} = u* − dt B^N G p^{n+1}`.  `m_pressure` is solved for
   directly each step — there is no incremental form.
-- **Modified-Poisson solve is matrix-free**, hand-rolled BiCGStab.  Operator
-  composed from existing `ComputePressureGradient`, face Laplacian,
-  and cell divergence pieces.  The current IB rows attach to this same
-  operator as `[-D; E] B^N [G H]`; a Tpetra::Operator wrapper remains
-  the intended scalable linear-algebra interface.
+- **Modified-Poisson solve is matrix-free**.  Pressure-only solves use
+  hand-rolled BiCGStab.  Coupled AMR IB solves use restarted GMRES on
+  the composite hierarchy operator.  The current IB rows attach to this
+  same operator as `[-D; E] B^N [G H]`; a Tpetra::Operator wrapper
+  remains the intended scalable linear-algebra interface.
 - **IB discretisation (current first pass)**: one Lagrangian marker at
   each line-segment/triangle centroid, element length/area as the
   quadrature weight, Peskin 4-point delta, component-wise MAC spreading
@@ -82,12 +83,11 @@ Key decisions already settled, do not re-litigate:
   (`FillFacePatch` / `FillCellPatch` helpers).  Intra-level halo +
   C/F interpolation are tied together in those helpers; downstream
   kernels assume their inputs have valid ghosts.
-- `average_down_faces(m_vstar)` *before* the per-level modified-Poisson
-  solves so coarse face values at the C/F interface equal the
-  averaged fine values.
+- `average_down_faces(m_vstar)` *before* the projection solve so coarse
+  face values at the C/F interface equal the averaged fine values.
 - `average_down_faces(m_vel)` + `average_down(m_pressure)` at the end of
   `Advance` to keep coarse representation consistent with averaged
-  fine values after the per-level projection.
+  fine values after the projection.
 - The `B^N` factor in the projection step is the **same** polynomial
   used in the predictor and in the modified-Poisson operator — this is
   Perot's exact-factorisation consistency.  Don't replace any of the
@@ -121,7 +121,7 @@ From the command palette: **`task: spawn`** → pick:
 
 The configure tasks pass `-DAMReX_DIR=/Users/hang/opt/amrex-26.01/install/lib/cmake/AMReX`.
 Trilinos is **not** currently a dependency; when replacing the local
-coupled BiCGStab with the planned Tpetra/Belos operator path, restore
+coupled GMRES with the planned Tpetra/Belos operator path, restore
 `find_package(Trilinos REQUIRED COMPONENTS Tpetra Belos Ifpack2
 Teuchos)` in the top-level `CMakeLists.txt` and re-add
 `-DTrilinos_DIR=/Users/hang/opt/trilinos-17.0.0/install/lib/cmake/Trilinos`
@@ -148,7 +148,7 @@ run).  CodeLLDB is auto-installed on first use.
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR.   |
 | `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D AMR flow past a stationary cylinder, Re_D=100, finest D/dx=80. |
 | `tests/3d/tg/inputs.tg`                   | Single-level smoke test (32³, periodic, Taylor–Green).     |
-| `tests/3d/tg_amr/inputs.tg_amr`           | 2-level AMR per-level Perot path + regrid + FillPatch.     |
+| `tests/3d/tg_amr/inputs.tg_amr`           | 2-level AMR hierarchy pressure path + regrid + FillPatch.  |
 | `tests/3d/tg2d/inputs.tg2d`               | Thin-periodic-z 2D Taylor–Green verification for 3D builds.|
 | `tests/3d/lid/inputs.lid`                 | Lid-driven cavity — all-Dirichlet BCs, singular pressure.  |
 | `tests/3d/lid_amr/inputs.lid_amr`         | AMR lid-driven cavity.                                     |
@@ -176,7 +176,7 @@ toward Poiseuille.
   by reading AMReX docs is too obvious to comment.
 - Don't introduce new third-party deps without discussion.  AMReX + MPI
   is the current dependency surface; Trilinos returns when the
-  Tpetra/Belos wrapper replaces the local coupled BiCGStab path.
+  Tpetra/Belos wrapper replaces the local coupled GMRES path.
 - Match the AMReX style of the surrounding code (`amrex::Real`,
   `amrex::Box`, `MFIter`, `ParallelFor`, etc.) rather than mixing in
   raw STL/MPI primitives.

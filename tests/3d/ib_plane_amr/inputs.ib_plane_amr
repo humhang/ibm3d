@@ -7,8 +7,7 @@
 # finest mesh.
 #
 # Expected with ins.verbose=2:
-#   level 0 pressure-only Perot solve
-#   level 1 coupled IB solve
+#   composite AMR IB projection solve
 #   |E u - U_ib|_inf ~ 1e-10
 #   |div u|_inf      ~ 1e-11
 #

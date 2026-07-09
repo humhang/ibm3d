@@ -71,7 +71,7 @@ the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
 - `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` — channel
   flow past a stationary radius-0.125 cylinder, with STL panel sizes
   near `1.5 * dx` for the current unpreconditioned coupled solver.
-  One step gives roughly 200 IB BiCGStab iterations at `1e-4`
+  One step gives roughly O(100-300) composite IB GMRES iterations at `1e-4`
   relative residual, `|E u - U_ib|_inf ≈ 2e-3`, and
   `|div u|_inf ≈ 1.5e-4`.
 

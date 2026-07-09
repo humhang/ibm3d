@@ -47,18 +47,16 @@ Decisions baked into the current solver, with rationale:
    interpolation of ghost data, no nested time loops.  IAMR-style
    subcycling can be retrofitted later if needed.
 
-7. **Approximate composite projection**.  Each level applies the local
-   Perot correction `u^{n+1} = u* − dt B^N G p` (or, on the finest IB
-   level, `u* − dt B^N (G p + H f)`).  After projection,
-   `average_down_faces(m_vel)` and `average_down(m_pressure)` sync the
-   coarse-level overlap with the fine averages, which absorbs the small
-   divergence residual the local projection leaves on C/F-adjacent coarse
-   cells.  Periodic Taylor–Green AMR reaches the Krylov tolerance; AMR
-   with nonperiodic boundaries or IB coupling can retain a bounded C/F
-   divergence defect until a proper composite projection is added.
-   Full refluxing of the correction (a "sync solve") is **not**
-   implemented and is not needed for the current smoke tests — but would
-   be required if the composite divergence had to be exactly zero.
+7. **Composite AMR projection**.  Projection solves use a hierarchy-wide
+   Krylov operator over the AMR pressure fields.  Fine pressure ghosts are
+   filled from the current coarse iterate inside each operator apply;
+   covered coarse cells are masked out of the active equations.  With IB
+   enabled, the Lagrangian force vector is part of the same Krylov vector,
+   but the IB rows/force columns are applied only on the finest level to
+   avoid the over-dense coarse marker system.  The operator synchronizes the
+   final `B^N(Gp [+ Hf])` face correction fine-to-coarse before divergence.
+   Full refluxing through every intermediate term in the `B^N` polynomial is
+   still future work.
 
 8. **Vorticity-based refinement tagging**.  `ErrorEst` computes
    `|ω|` at cell centres from averaged face velocities and tags cells
@@ -173,11 +171,10 @@ Decisions baked into the current solver, with rationale:
     **Verified 2026-05-18**: single-level lid `|div u|~3e-11`;
     1-level AMR lid stable, `|u|` tracks single-level, `|div u|~1e-2`
     at C/F; full 2-level `tests/3d/lid_amr/inputs.lid_amr` stable, `|u|` 0.07→0.23
-    smooth, `|div u|~2e-2` (bounded, steady).  The residual
-    `|div u|~1e-2` at C/F is the *expected* per-level-approximation
-    error (Dirichlet-from-coarse, no reflux) — interior is
-    divergence-free.  A proper composite `D B^N G` with reflux remains
-    the deferred refactor for when C/F divergence must vanish.  Do NOT
+    smooth, `|div u|~2e-2` (bounded, steady).  Those older residuals came
+    from the former per-level projection path; current pressure solves use
+    the composite hierarchy operator, but nonperiodic AMR plus full
+    `B^N`-term refluxing still needs broader validation.  Do NOT
     "simplify" away: the four `setVal(0)`/buffer choices, the
     `pc_interp`, the `level_singular` gate, and BiCGStab are all
     load-bearing.
@@ -238,10 +235,12 @@ Decisions baked into the current solver, with rationale:
     records, and uploads device copies.  `INSSolver_IB.cpp` implements
     Peskin 4-point `H/E` as marker-centred finite-support kernels,
     owner-mask interpolation plus atomics to avoid double-counted shared
-    faces, GPU-ready IB refinement tagging, and a finest-level coupled BiCGStab
-    solve for `[-D; E] B^N [G H] [p; f]`.  IB coupling is
-    applied only on the finest AMR level; coarser data is overwritten by
-    average-down where covered.  The supplied IB smoke cases are:
+    faces, and GPU-ready IB refinement tagging.  The coupled AMR IB solve is
+    a local restarted-GMRES composite hierarchy solve for
+    `[-D; E] B^N [G H] [p; f]`, warm-started by the older block solve.  IB
+    coupling is applied only on the finest AMR level; coarser active
+    pressure equations remain part of the same Krylov solve.  The supplied
+    IB smoke cases are:
     `tests/3d/ib_plane`, `tests/3d/ib_plane_amr`, and
     `tests/3d/ib_cylinder_channel`.  The cylinder case intentionally uses an
     STL panel size near `1.5 * dx` because the current unpreconditioned

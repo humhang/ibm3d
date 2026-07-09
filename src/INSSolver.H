@@ -9,6 +9,7 @@
 #include <AMReX_GpuContainers.H>
 #include <AMReX_MultiFab.H>
 #include <AMReX_RealVect.H>
+#include <AMReX_iMultiFab.H>
 
 #include <array>
 #include <memory>
@@ -23,9 +24,8 @@
 ///   u, v, w   face-centred (one component each)
 ///   p         cell-centred (one component)
 ///
-/// Algorithm (per time step, single-level proper; multi-level
-/// approximated by per-level Perot solves + average-down sync)
-/// ------------------------------------------------------------
+/// Algorithm (per time step)
+/// -------------------------
 ///   ε = ν dt / 2,  B^N = Σ_{k=0}^N (εL)^k   (truncated Neumann series for
 ///   A^{−1})
 ///
@@ -50,13 +50,17 @@
 ///   * `m_pressure` is solved for directly, not accumulated.  Use the
 ///     previous step's value as the Krylov warm start.
 ///
-/// Coarse–fine treatment (current, approximate)
-/// --------------------------------------------
-/// Each level's modified Poisson is solved independently; u* and the
-/// projected u are averaged-down fine→coarse to keep coarse face values
-/// consistent at the C/F interface.  A proper composite D B^N G — with
-/// fine ghosts of every intermediate face term FillPatched from coarse
-/// and average_down between L applications — is feasible but deferred.
+/// Coarse–fine treatment
+/// ---------------------
+/// Projection solves are hierarchy-wide Krylov systems spanning the
+/// pressure fields on all levels.  Fine pressure ghosts are filled from
+/// the current coarse Krylov iterate inside each operator apply.  With
+/// IB enabled, the Krylov vector also includes the Lagrangian force
+/// unknowns, but the IB rows/force columns are attached only on the
+/// finest level; applying the IB constraints on coarser levels
+/// over-densifies the Lagrangian constraints and makes the system
+/// singular.  Coarse data covered by finer grids is averaged down after
+/// projection for output/restart consistency.
 /// Per-domain-face boundary condition kind.
 ///
 ///   periodic   handled by AMReX geometry periodicity
@@ -226,7 +230,7 @@ public:
   void ApplyModifiedPoissonOp(int lev, const amrex::MultiFab &phi,
                               amrex::MultiFab &result);
 
-  /// Matrix-free BiCGStab on (D B^N G) p = rhs.
+  /// Matrix-free BiCGStab on one level of (D B^N G) p = rhs.
   /// `p` is in/out — pass the previous-step pressure as the warm start.
   /// `rhs` is read-only.  Returns the iteration count.
   int SolveModifiedPoisson(int lev, amrex::MultiFab &p,
@@ -246,12 +250,33 @@ public:
       std::vector<amrex::Real> &marker_vel) const;
   void AddIBTags(int lev, amrex::TagBoxArray &tags) const;
 
+  void ApplyCompositeModifiedPoissonOp(
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result,
+      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
+  void ApplyCompositeIBSchurOp(
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
+      const std::vector<amrex::Real> &force,
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result_p,
+      std::vector<amrex::Real> &result_ib,
+      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
+  int SolveCompositeModifiedPoisson(
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
+      const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs,
+      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
+  int SolveCompositeIBProjection(
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
+      const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs_p,
+      const std::vector<amrex::Real> &rhs_ib,
+      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
+
   /// Optional regression check: outflow Dirichlet pressure must remove
   /// the constant-pressure null mode.
   void CheckOutflowPressurePin();
 
-  /// Perot projection across all levels: per-level modified-Poisson solve,
-  /// per-level u^{n+1} = u* − dt B^N G p, then fine→coarse sync.
+  /// Perot projection across all levels: hierarchy modified-Poisson or
+  /// coupled IB solve, per-level u^{n+1} = u* − dt B^N G p, then
+  /// fine→coarse sync.
   void ProjectPerot();
 
   // FillPatch helpers

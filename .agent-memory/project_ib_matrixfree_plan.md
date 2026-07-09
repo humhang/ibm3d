@@ -1,12 +1,12 @@
 ---
 name: Project — matrix-free Trilinos plan for the scalable IB solve
-description: Architectural plan for replacing the local IB BiCGStab prototype with a scalable Tpetra/Belos path; settled in the 2026-05-14 conversation.
+description: Architectural plan for replacing the local IB GMRES prototype with a scalable Tpetra/Belos path; settled in the 2026-05-14 conversation.
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-The local first IB path already solves the finest-level Taira-Colonius
-projection with hand-rolled BiCGStab.  The scalable follow-up should
-wrap the same operator structure in Trilinos.  The target saddle-point
+The local first IB path already solves the composite AMR Taira-Colonius
+projection with hand-rolled restarted GMRES.  The scalable follow-up
+should wrap the same operator structure in Trilinos.  The target saddle-point
 structure is
 
 ```
@@ -59,13 +59,14 @@ elastic bodies"* describes the operator + preconditioner structure in
 detail.  Treat it as the production reference; AMReX + Tpetra here is
 roughly the equivalent stack.
 
-**Current status note (2026-05-20)**: the first IB projection pass is
+**Current status note (2026-05-20, updated 2026-07-09)**: the first IB projection pass is
 implemented without Trilinos in `INSSolver_IB.cpp`: `IBGeometry` owns
 GPU-friendly host/device points, elements, and markers; `H/E` use a
 Peskin 4-point marker-centred finite-support kernel; `ErrorEst` tags
-marker neighborhoods; and `ProjectPerot` calls the local coupled
-BiCGStab on the finest level.  The items below apply when replacing
-that local coupled solve with the planned Tpetra/Belos wrapper.
+marker neighborhoods; and `ProjectPerot` calls the local composite
+coupled GMRES solve with IB active only on the finest level.  The items
+below apply when replacing that local coupled solve with the planned
+Tpetra/Belos wrapper.
 
 **What to bring back into the build when implementing the Tpetra path**:
 

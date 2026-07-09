@@ -87,23 +87,24 @@ it violates the `B^N` stability cap.
 
 ## AMR
 
-- Per-level Perot solves with fine→coarse sync.  Each level's
-  modified Poisson is solved independently; `average_down_faces` of
-  `u*` before the solves and of `u^{n+1}` after the projection
-  keeps coarse face values consistent with averaged fine values at
-  the C/F interface.
+- Projection solves use a hierarchy-wide Krylov operator over the AMR
+  pressure fields.  Fine pressure ghosts are filled from the current
+  coarse iterate inside each operator apply; covered coarse cells are
+  masked out of the active equations.  With IB enabled, the Lagrangian
+  force unknowns are part of the same composite Krylov vector, but the
+  IB rows/force columns are applied only on the finest AMR level.
+- `average_down_faces` of `u*` before the solve and of `u^{n+1}` after
+  the projection keeps coarse face values consistent with averaged fine
+  values at the C/F interface.
 - Ghost cells at intra-level patch boundaries: `FillBoundary` (via
   `FillPatchSingleLevel`).  Ghost cells at C/F boundaries: interpolation
   from coarse (`face_linear_interp` for velocity, `pc_interp` for
   pressure) via `FillPatchTwoLevels`.
 - Refinement is driven by `|ω|` (cell-centred vorticity magnitude)
   exceeding `ins.refine_vort`.
-- A **proper composite** `D B^N G` — with FillPatch of every
-  intermediate face term and average_down between L applications — is
-  a natural future refactor when AMR divergence tolerance matters.
-  Periodic 2-level Taylor–Green reaches the Krylov tolerance; nonperiodic
-  AMR with physical-boundary refinement can retain a bounded C/F
-  divergence defect until a composite projection is added.
+- The composite operator synchronizes the final `B^N(Gp [+ Hf])` face
+  correction before taking divergence.  Full refluxing through every
+  intermediate term in the `B^N` polynomial is still future work.
 
 ## Boundary conditions
 
@@ -229,17 +230,17 @@ the pressure, so the mean is not removed).
 - Moving/deforming-body kinematics beyond uniform prescribed
   `ib.velocity`.
 - Tpetra/Belos wrapping and MLMG preconditioning for the IB Schur
-  operator.  The current coupled solve is still the local matrix-free
-  BiCGStab path.
-- Composite AMR IB projection.  IB coupling is applied on the finest
-  level only; coarser data is synchronized by average-down where covered.
+  operator.  The current coupled AMR IB solve is still local
+  matrix-free GMRES, warm-started by the older block solve.
 - Temporal subcycling between AMR levels.
-- Sync-solve refluxing of `∇φ` (the projection is "approximate" — the
-  per-level local gradient plus a post-projection `average_down`).
+- Full sync-solve refluxing through every term in the `B^N` polynomial
+  (the composite operator synchronizes the final face correction before
+  divergence; the projection still uses local level gradients plus
+  post-projection `average_down`).
 - Inhomogeneous Dirichlet data inside the truncated Neumann series
   (handled approximately: homogeneous in the series, re-imposed on
   `u*`/`u^{n+1}` afterwards — fine for low truncation order N).
-- A proper composite `D B^N G` for AMR + non-periodic BCs (the
-  domain-boundary physical BC is applied per-level after FillPatch;
+- Broader validation of composite AMR projection with non-periodic BCs
+  (the domain-boundary physical BC is applied per-level after FillPatch;
   refinement is kept interior in the supplied tests so C/F and
   domain boundaries don't coincide).

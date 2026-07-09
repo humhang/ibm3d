@@ -14,8 +14,8 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 | `INSSolver_BC.cpp`       | `ParseBCs`, `BuildBCRecs`, `FillVelGhostPhys` (Dirichlet/slip/outflow, normal vs tangential staggered handling, homogeneous flag), `FillPresGhostPhys` (Neumann walls / Dirichlet-0 outflow), `EnforceVelDirichlet`. |
 | `INSSolver_Advect.cpp`   | `ComputeAdvection(lev, adv, vel_in)` — face-by-face `-(u·∇)u`; `vel_in` already FillPatched + physical-BC filled. |
 | `INSSolver_Diffuse.cpp`  | `ApplyFaceLaplacian`, `ComputePressureGradient`, `ApplyBNFace` (B^N, raw valid k=0 term plus homogeneous k>=1 work-term ghosts), `ApplyCNDiffusion` (Perot predictor, then `EnforceVelDirichlet`). |
-| `INSSolver_Project.cpp`  | `ApplyModifiedPoissonOp` (−D B^N G), `SolveModifiedPoisson` (pressure-only BiCGStab), `ProjectPerot` (pressure-only projection or finest-level coupled IB projection). |
-| `INSSolver_IB.cpp`       | IB geometry initialization, Peskin 4-point `H/E`, finest-level IB tagging, coupled BiCGStab on `[-D;E]B^N[G H]`. |
+| `INSSolver_Project.cpp`  | `ApplyModifiedPoissonOp` (−D B^N G), composite hierarchy pressure / IB projection solves, `ProjectPerot`. |
+| `INSSolver_IB.cpp`       | IB geometry initialization, Peskin 4-point `H/E`, finest-level IB tagging, single-level coupled BiCGStab used as the composite IB warm start. |
 | `IBGeometry.H/.cpp`      | Dimension-selected host loaders plus marker construction and device copies for IB geometry: 2D ASCII line-segment curves, 3D ASCII/binary STL triangle surfaces with exact coordinate de-duplication into indexed connectivity. |
 | `CMakeLists.txt`         | Executables `ins_solver` and `ins_solver_2d`, link MPI + AMReX (Trilinos not currently needed). |
 
