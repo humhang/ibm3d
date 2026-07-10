@@ -307,12 +307,13 @@ void IBGeometry::UploadToDevice() {
   device_points.resize(points.size());
   device_elements.resize(elements.size());
   device_markers.resize(markers.size());
-  amrex::Gpu::copy(amrex::Gpu::hostToDevice, points.begin(), points.end(),
+  amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, points.begin(), points.end(),
                    device_points.begin());
-  amrex::Gpu::copy(amrex::Gpu::hostToDevice, elements.begin(), elements.end(),
+  amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, elements.begin(), elements.end(),
                    device_elements.begin());
-  amrex::Gpu::copy(amrex::Gpu::hostToDevice, markers.begin(), markers.end(),
+  amrex::Gpu::copyAsync(amrex::Gpu::hostToDevice, markers.begin(), markers.end(),
                    device_markers.begin());
+  amrex::Gpu::streamSynchronize();
 }
 
 void IBGeometry::ClearDevice() {
