@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the curve used by inputs.ib_cylinder_re100."""
+"""Generate the curve used by inputs.ib_cylinder_re100_coarse."""
 
 import math
 from pathlib import Path
@@ -10,10 +10,9 @@ YC = 0.0
 DIAMETER = 1.0
 RADIUS = 0.5 * DIAMETER
 
-# With finest dx = D / 80, this gives ds ~= 2.6 dx. Coupled BiCGStab still
-# lacks an in-iteration IB block preconditioner and is sensitive to
-# over-dense markers.
-N_SEGMENTS = 96
+# With finest dx = D / 20, this gives ds ~= 2.6 dx, matching the marker-to-
+# grid spacing of the D / dx = 80 canonical case with 96 segments.
+N_SEGMENTS = 24
 
 
 def main():

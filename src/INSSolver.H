@@ -278,6 +278,7 @@ public:
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
       const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
+  /// Matrix-free BiCGStab for the composite pressure/finest-level IB system.
   int SolveCompositeIBProjection(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
       const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs_p,

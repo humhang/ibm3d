@@ -2,7 +2,7 @@
 # inputs.ib_cylinder_channel — channel flow past a stationary cylinder
 #
 # This is a more geometric IB smoke case built from tests/3d/channel.
-# The in-repo coupled GMRES has no in-iteration IB block preconditioner,
+# The in-repo coupled BiCGStab has no in-iteration IB block preconditioner,
 # so this case deliberately uses an IB panel size near 1.5 * dx instead
 # of a finer body mesh.
 #
@@ -15,7 +15,7 @@
 #   IB panel sizes   = chord 0.09567, axial 0.08333
 #
 # Expected one-step smoke output with ins.verbose=2:
-#   Composite IB GMRES(...): O(100-300) iters at about 1e-4 relative residual
+#   Composite IB BiCGStab: O(100-300) iters at about 1e-4 relative residual
 #   |E u - U_ib|_inf = O(1e-3)
 #   |div u|_inf      = O(1e-4)
 #

@@ -14,7 +14,7 @@ AMReX 26.01 (currently used):
 - No OpenMP, no SIMD, no GPU backend
 
 Trilinos 17.0.0 (not active in the current build; needed when replacing
-the hand-rolled IB GMRES path with the planned Tpetra/Belos solve):
+the hand-rolled IB BiCGStab path with the planned Tpetra/Belos solve):
 
 - Install prefix: `/Users/hang/opt/trilinos-17.0.0/install`
 - CMake config dir: `/Users/hang/opt/trilinos-17.0.0/install/lib/cmake/Trilinos`

@@ -1,0 +1,61 @@
+# ============================================================
+# inputs.ib_cylinder_re100_coarse - coarse 2D cylinder debug case
+#
+# Same physical problem and base grid as ib_cylinder_re100, with fewer
+# refinement levels and proportionally fewer IB markers:
+#   Re_D = U_inf D / nu = 1 * 1 / 0.01 = 100
+#   cylinder center = (0, 0), radius R = 0.5, diameter D = 1
+#   domain x = [-4.8D, 14.4D], y = [-14.4D, 14.4D]
+#   level-0 dx = 0.1, refinement ratio = 2
+#   base grid = 192 x 288, divisible by the 32-cell blocking factor
+#   finest dx = 0.05, finest resolution D / dx = 20
+#   IB segment chord ~= 0.1305 = 2.61 finest cells
+#
+# Regenerate the curve with:
+#   python3 tests/2d/ib_cylinder_re100_coarse/generate_cylinder_curve.py
+#
+# Run from the repository root:
+#   ./build-release/src/ins_solver_2d tests/2d/ib_cylinder_re100_coarse/inputs.ib_cylinder_re100_coarse
+# ============================================================
+
+# ---- Domain ----
+geometry.prob_lo     =  -4.8  -14.4
+geometry.prob_hi     =  14.4   14.4
+geometry.is_periodic =  0  0
+
+# ---- Grid ----
+amr.n_cell           =  192  288
+amr.max_level        =  1
+amr.ref_ratio        =  2
+amr.blocking_factor  =  32
+amr.max_grid_size    =  64
+amr.v                =  1
+amr.n_error_buf      =  4
+amr.grid_eff         =  0.7
+
+# ---- Boundary conditions ----
+ins.bc_xlo = inflow
+ins.bc_xhi = outflow
+ins.bc_ylo = slip
+ins.bc_yhi = slip
+
+ins.vel_xlo = 1.0 0.0
+
+# ---- Solver ----
+ins.ic               =  quiescent
+ins.nu               =  1.0e-2
+ins.cfl              =  0.4
+ins.t_stop           =  20.0
+ins.max_step         =  5000
+ins.plot_int         =  100
+ins.cn_order         =  2
+ins.regrid_int       =  5
+ins.poisson_tol      =  1.0e-5
+ins.poisson_max_iter =  4000
+ins.verbose          =  2
+ins.plot_prefix      =  plt_ib_cylinder_re100_coarse_2d
+
+# ---- Immersed boundary ----
+ib.geometry          =  tests/2d/ib_cylinder_re100_coarse/cylinder.curve
+ib.velocity          =  0.0  0.0
+ib.refine_radius     =  8.0

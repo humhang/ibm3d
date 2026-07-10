@@ -59,6 +59,10 @@ over-constrained coarse-grid marker system.  The current implementation
 uses one marker per immersed element centroid, with element length/area
 as its quadrature weight.
 
+The coupled hierarchy is solved with matrix-free BiCGStab using checked
+pressure-block warm starts, periodic true-residual replacement, and
+best-iterate rollback before the pressure cleanup.
+
 Why the modified Poisson `D B^N G` and not the standard `∇²` of a
 Chorin projection?  Perot 1997 shows that the exact block-LU
 factorisation of the discrete `[A, G; D, 0]` system yields the
@@ -216,6 +220,7 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 | `tests/2d/ib_square/inputs.ib_square` | Native 2D coupled IB projection smoke test for `ins_solver_2d`. |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR for `ins_solver_2d`. |
 | `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D AMR uniform flow past a stationary cylinder, `Re_D=100`, finest `D/dx=80`. |
+| `tests/2d/ib_cylinder_re100_coarse/inputs.ib_cylinder_re100_coarse` | Coarse local-debug variant with one refinement level, finest `D/dx=20`, and 24 IB markers. |
 | `tests/3d/tg/inputs.tg` | 32³ single-level Taylor–Green vortex, periodic, Re ≈ 100. |
 | `tests/3d/tg_amr/inputs.tg_amr` | 32³ base + 1 refinement level (2× ratio), vorticity tagging. |
 | `tests/3d/tg2d/inputs.tg2d` | Thin-periodic-z Taylor–Green analytic case for the 3D executable. |
@@ -242,7 +247,8 @@ the pressure, so the mean is not removed).
   `ib.velocity`.
 - Tpetra/Belos wrapping and MLMG preconditioning for the IB Schur
   operator.  The current coupled AMR IB solve uses in-repo matrix-free
-  GMRES with checked pressure-block warm starts and cleanup, but no
+  BiCGStab with checked pressure-block warm starts, periodic true-residual
+  replacement, and cleanup, but no
   in-iteration multilevel block preconditioner.
 - Temporal subcycling between AMR levels.
 - Inhomogeneous Dirichlet data inside the truncated Neumann series

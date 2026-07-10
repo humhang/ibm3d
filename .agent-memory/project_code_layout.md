@@ -30,6 +30,7 @@ Top-level files:
 | `tests/2d/ib_square/inputs.ib_square`  | Native 2D coupled IB projection smoke case with local curve.               |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection AMR smoke case.                     |
 | `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D flow past a stationary cylinder, Re_D=100, finest D/dx=80.    |
+| `tests/2d/ib_cylinder_re100_coarse/inputs.ib_cylinder_re100_coarse` | Coarse local-debug cylinder, one refinement level, finest D/dx=20, 24 markers. |
 | `tests/3d/tg/inputs.tg`                | Single-level Taylor–Green test (`max_level=0`, 32³).                       |
 | `tests/3d/tg_amr/inputs.tg_amr`        | 2-level AMR Taylor–Green test (`max_level=1`, vorticity tagging).          |
 | `tests/3d/tg2d/inputs.tg2d`            | Thin-periodic-z Taylor–Green analytic/self-convergence case.               |

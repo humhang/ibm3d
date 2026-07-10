@@ -10,7 +10,7 @@ Taira–Colonius IB path now loads geometry, builds element-centroid
 markers, and solves the coupled projection for prescribed IB velocity.
 The longer-term linear-algebra direction is still matrix-free
 `Tpetra::Operator` with AMReX `MLMG` as the preconditioner; the current
-executable coupled AMR path uses in-repo restarted GMRES with checked
+executable coupled AMR path uses in-repo BiCGStab with checked
 pressure-block warm starts and cleanup.
 
 Key decisions already settled, do not re-litigate:
@@ -23,9 +23,9 @@ Key decisions already settled, do not re-litigate:
   `(D B^N G) p^{n+1} = (1/dt) D u*`, projection
   `u^{n+1} = u* − dt B^N G p^{n+1}`.  `m_pressure` is solved for
   directly each step — there is no incremental form.
-- **Modified-Poisson solve is matrix-free**.  Pressure-only solves use
-  hand-rolled BiCGStab.  Coupled AMR IB solves use restarted GMRES on
-  the composite hierarchy operator.  The current IB rows attach to this
+- **Modified-Poisson solve is matrix-free**.  Pressure-only and coupled
+  AMR IB solves use hand-rolled BiCGStab on the composite hierarchy
+  operator.  The current IB rows attach to this
   same operator as `[-D; E] B^N [G H]`; a Tpetra::Operator wrapper
   remains the intended scalable linear-algebra interface.  For
   non-singular systems, AMReX's composite Poisson solve supplies a
@@ -126,7 +126,7 @@ From the command palette: **`task: spawn`** → pick:
 
 The configure tasks pass `-DAMReX_DIR=/Users/hang/opt/amrex-26.01/install/lib/cmake/AMReX`.
 Trilinos is **not** currently a dependency; when replacing the hand-rolled
-coupled GMRES with the planned Tpetra/Belos operator path, restore
+coupled BiCGStab with the planned Tpetra/Belos operator path, restore
 `find_package(Trilinos REQUIRED COMPONENTS Tpetra Belos Ifpack2
 Teuchos)` in the top-level `CMakeLists.txt` and re-add
 `-DTrilinos_DIR=/Users/hang/opt/trilinos-17.0.0/install/lib/cmake/Trilinos`
@@ -153,6 +153,7 @@ run).  CodeLLDB is auto-installed on first use.
 | `tests/2d/ib_square/inputs.ib_square`     | Native 2D coupled IB projection smoke test.                |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR.   |
 | `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D AMR flow past a stationary cylinder, Re_D=100, finest D/dx=80. |
+| `tests/2d/ib_cylinder_re100_coarse/inputs.ib_cylinder_re100_coarse` | Coarse local-debug cylinder, one refinement level, finest D/dx=20. |
 | `tests/3d/tg/inputs.tg`                   | Single-level smoke test (32³, periodic, Taylor–Green).     |
 | `tests/3d/tg_amr/inputs.tg_amr`           | 2-level AMR hierarchy pressure path + regrid + FillPatch.  |
 | `tests/3d/tg2d/inputs.tg2d`               | Thin-periodic-z 2D Taylor–Green verification for 3D builds.|
@@ -183,7 +184,7 @@ toward Poiseuille.
   by reading AMReX docs is too obvious to comment.
 - Don't introduce new third-party deps without discussion.  AMReX + MPI
   is the current dependency surface; Trilinos returns when the
-  Tpetra/Belos wrapper replaces the hand-rolled coupled GMRES path.
+  Tpetra/Belos wrapper replaces the hand-rolled coupled BiCGStab path.
 - Match the AMReX style of the surrounding code (`amrex::Real`,
   `amrex::Box`, `MFIter`, `ParallelFor`, etc.) rather than mixing in
   raw STL/MPI primitives.

@@ -1,11 +1,11 @@
 ---
 name: Project — matrix-free Trilinos plan for the scalable IB solve
-description: Architectural plan for replacing the hand-rolled IB GMRES implementation with a scalable Tpetra/Belos path; settled in the 2026-05-14 conversation.
+description: Architectural plan for replacing the hand-rolled IB BiCGStab implementation with a scalable Tpetra/Belos path; settled in the 2026-05-14 conversation.
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
 The first in-repo IB path already solves the composite AMR Taira-Colonius
-projection with hand-rolled restarted GMRES.  The scalable follow-up
+projection with hand-rolled BiCGStab.  The scalable follow-up
 should wrap the same operator structure in Trilinos.  The target saddle-point
 structure is
 
@@ -66,10 +66,10 @@ elastic bodies"* describes the operator + preconditioner structure in
 detail.  Treat it as the production reference; AMReX + Tpetra here is
 roughly the equivalent stack.
 
-**Current status note (2026-05-20, updated 2026-07-09)**: the first IB projection pass is
+**Current status note (2026-05-20, updated 2026-07-10)**: the first IB projection pass is
 implemented without Trilinos: `INSSolver_IB.cpp` owns the geometry-facing
 `H/E` kernels and marker tagging, while `INSSolver_Project.cpp` owns the
-composite hierarchy operator and hand-rolled GMRES.  IB rows and force
+composite hierarchy operator and hand-rolled BiCGStab.  IB rows and force
 columns are active only on the finest level, but pressure rows span all
 active AMR cells.  The items below apply when replacing that hand-rolled
 coupled solve with the planned Tpetra/Belos wrapper.

@@ -12,7 +12,7 @@ DIAMETER = 1.0
 RADIUS = 0.5 * DIAMETER
 
 # With finest dx = D / 80, equatorial and meridional panel lengths are
-# about 5.2 finest cells. Coupled GMRES still lacks an in-iteration IB
+# about 5.2 finest cells. Coupled BiCGStab still lacks an in-iteration IB
 # block preconditioner and is sensitive to over-dense markers.
 N_THETA = 48
 N_PHI = 24

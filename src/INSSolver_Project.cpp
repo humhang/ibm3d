@@ -10,8 +10,8 @@
  *
  * The operator D B^N G is applied matrix-free (compose existing
  * gradient, face-Laplacian, divergence pieces).  The pressure-only
- * hierarchy solve uses BiCGStab; the coupled AMR IB block uses
- * restarted GMRES.  AMReX's composite Poisson solve supplies a checked
+ * hierarchy solve and the coupled AMR IB block use BiCGStab.  AMReX's
+ * composite Poisson solve supplies a checked
  * pressure-block initial guess for non-singular modified/IB systems.
  *
  * Multi-level projection uses a hierarchy-wide Krylov solve whose fine
@@ -106,13 +106,6 @@ void saxpy_composite(Vector<std::unique_ptr<MultiFab>> &dst, Real a,
   mask_composite(dst, mask);
 }
 
-void scale_composite(Vector<std::unique_ptr<MultiFab>> &dst, Real a,
-                     const Vector<std::unique_ptr<iMultiFab>> &mask) {
-  for (auto &level_mf : dst)
-    level_mf->mult(a, 0, 1, 0);
-  mask_composite(dst, mask);
-}
-
 Real dot_composite(const Vector<std::unique_ptr<MultiFab>> &a,
                    const Vector<std::unique_ptr<MultiFab>> &b) {
   Real value = 0.0_rt;
@@ -137,11 +130,6 @@ void vector_lincomb_project(std::vector<Real> &dst, Real a,
                             const std::vector<Real> &y) {
   for (std::size_t i = 0; i < dst.size(); ++i)
     dst[i] = a * x[i] + b * y[i];
-}
-
-void vector_scale_project(std::vector<Real> &dst, Real a) {
-  for (Real &value : dst)
-    value *= a;
 }
 
 Real dot_coupled_composite(const Vector<std::unique_ptr<MultiFab>> &a_p,
@@ -235,13 +223,6 @@ int solve_vector_bicgstab(std::vector<Real> &solution,
   return iter;
 }
 
-void scale_coupled_composite(Vector<std::unique_ptr<MultiFab>> &p,
-                             std::vector<Real> &ib, Real a,
-                             const Vector<std::unique_ptr<iMultiFab>> &mask) {
-  scale_composite(p, a, mask);
-  vector_scale_project(ib, a);
-}
-
 void saxpy_coupled_composite(Vector<std::unique_ptr<MultiFab>> &dst_p,
                              std::vector<Real> &dst_ib, Real a,
                              const Vector<std::unique_ptr<MultiFab>> &x_p,
@@ -249,6 +230,17 @@ void saxpy_coupled_composite(Vector<std::unique_ptr<MultiFab>> &dst_p,
                              const Vector<std::unique_ptr<iMultiFab>> &mask) {
   saxpy_composite(dst_p, a, x_p, mask);
   vector_saxpy_project(dst_ib, a, x_ib);
+}
+
+void lincomb_coupled_composite(Vector<std::unique_ptr<MultiFab>> &dst_p,
+                               std::vector<Real> &dst_ib, Real a,
+                               const Vector<std::unique_ptr<MultiFab>> &x_p,
+                               const std::vector<Real> &x_ib, Real b,
+                               const Vector<std::unique_ptr<MultiFab>> &y_p,
+                               const std::vector<Real> &y_ib,
+                               const Vector<std::unique_ptr<iMultiFab>> &mask) {
+  lincomb_composite(dst_p, a, x_p, b, y_p, mask);
+  vector_lincomb_project(dst_ib, a, x_ib, b, y_ib);
 }
 
 Real sum_composite(const Vector<std::unique_ptr<MultiFab>> &a) {
@@ -276,27 +268,6 @@ void subtract_composite_mean(Vector<std::unique_ptr<MultiFab>> &mf,
   for (auto &level_mf : mf)
     level_mf->plus(-mean, 0, 1, 0);
   mask_composite(mf, mask);
-}
-
-void apply_givens(Real c, Real s, Real &a, Real &b) {
-  const Real t = c * a + s * b;
-  b = -s * a + c * b;
-  a = t;
-}
-
-void generate_givens(Real a, Real b, Real &c, Real &s) {
-  if (b == 0.0_rt) {
-    c = 1.0_rt;
-    s = 0.0_rt;
-  } else if (std::abs(b) > std::abs(a)) {
-    const Real t = a / b;
-    s = 1.0_rt / std::sqrt(1.0_rt + t * t);
-    c = s * t;
-  } else {
-    const Real t = b / a;
-    c = 1.0_rt / std::sqrt(1.0_rt + t * t);
-    s = c * t;
-  }
 }
 
 void negative_divergence_from_faces(
@@ -897,6 +868,8 @@ int INSSolver::SolveCompositeIBProjection(
   const Real rhs_norm = std::sqrt(std::max(rhs_norm2, Real(1.0e-300)));
   const Real tol = m_poisson_tol * rhs_norm;
   const Real tiny = 1.0e-300;
+  const Real tol2 =
+      m_poisson_tol * m_poisson_tol * std::max(rhs_norm2, Real(1.0e-300));
 
   Vector<std::unique_ptr<MultiFab>> Ax_p, rr_p;
   define_composite_like(Ax_p, p, 0);
@@ -980,123 +953,170 @@ int INSSolver::SolveCompositeIBProjection(
     }
   }
 
-  const int restart = std::min(100, std::max(1, m_poisson_max_iter));
-  std::vector<Vector<std::unique_ptr<MultiFab>>> Vp(restart + 1);
-  for (auto &basis : Vp)
-    define_composite_like(basis, p, 1);
-  std::vector<std::vector<Real>> Vib(restart + 1,
-                                     std::vector<Real>(rhs_ib.size(), 0.0_rt));
+  Vector<std::unique_ptr<MultiFab>> rhat_p, search_p, image_p, intermediate_p,
+      image_intermediate_p;
+  define_composite_like(rhat_p, p, 0);
+  define_composite_like(search_p, p, 1);
+  define_composite_like(image_p, p, 0);
+  define_composite_like(intermediate_p, p, 1);
+  define_composite_like(image_intermediate_p, p, 0);
+  std::vector<Real> rhat_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> search_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> image_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> intermediate_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> image_intermediate_ib(rhs_ib.size(), 0.0_rt);
 
-  Vector<std::unique_ptr<MultiFab>> w_p;
-  define_composite_like(w_p, p, 1);
-  std::vector<Real> w_ib(rhs_ib.size(), 0.0_rt);
-
-  std::vector<std::vector<Real>> h(restart + 1,
-                                   std::vector<Real>(restart, 0.0_rt));
-  std::vector<Real> cs(restart, 0.0_rt);
-  std::vector<Real> sn(restart, 0.0_rt);
-  std::vector<Real> g(restart + 1, 0.0_rt);
-
-  const auto update_solution = [&](int nvec) {
-    std::vector<Real> y(nvec, 0.0_rt);
-    for (int i = nvec - 1; i >= 0; --i) {
-      Real value = g[i];
-      for (int j = i + 1; j < nvec; ++j)
-        value -= h[i][j] * y[j];
-      if (std::abs(h[i][i]) <= tiny || !std::isfinite(h[i][i]))
-        return false;
-      y[i] = value / h[i][i];
-    }
-    for (int i = 0; i < nvec; ++i)
-      saxpy_coupled_composite(p, m_ib_force, y[i], Vp[i], Vib[i], active_masks);
-    return true;
-  };
-
+  constexpr int residual_refresh = 100;
   const char *breakdown = nullptr;
   int iter = 0;
-  while (iter < m_poisson_max_iter && resid > tol) {
-    if (!std::isfinite(resid)) {
+  while (iter < m_poisson_max_iter) {
+    const CoupledResidual exact_residual = evaluate_residual();
+    const Real exact_resid2 =
+        exact_residual.pressure_norm2 + exact_residual.ib_norm2;
+    resid = exact_residual.norm();
+    remember_current_if_better(resid);
+    if (!std::isfinite(exact_resid2)) {
       breakdown = "non-finite residual";
       break;
     }
+    if (exact_resid2 <= tol2)
+      break;
 
-    copy_composite(Vp[0], rr_p, active_masks);
-    Vib[0] = rr_ib;
-    scale_coupled_composite(Vp[0], Vib[0], 1.0_rt / resid, active_masks);
+    copy_composite(rhat_p, rr_p, active_masks);
+    rhat_ib = rr_ib;
+    for (auto &level : search_p)
+      level->setVal(0.0);
+    for (auto &level : image_p)
+      level->setVal(0.0);
+    std::fill(search_ib.begin(), search_ib.end(), 0.0_rt);
+    std::fill(image_ib.begin(), image_ib.end(), 0.0_rt);
 
-    for (auto &row : h)
-      std::fill(row.begin(), row.end(), 0.0_rt);
-    std::fill(cs.begin(), cs.end(), 0.0_rt);
-    std::fill(sn.begin(), sn.end(), 0.0_rt);
-    std::fill(g.begin(), g.end(), 0.0_rt);
-    g[0] = resid;
+    Real rho = 1.0_rt;
+    Real alpha = 1.0_rt;
+    Real omega = 1.0_rt;
+    const int cycle_end = std::min(iter + residual_refresh, m_poisson_max_iter);
+    bool cycle_breakdown = false;
 
-    int nvec = 0;
-    bool solution_updated = false;
-    for (; nvec < restart && iter < m_poisson_max_iter; ++nvec, ++iter) {
-      ApplyCompositeIBSchurOp(Vp[nvec], Vib[nvec], w_p, w_ib, active_masks);
-
-      for (int pass = 0; pass < 2; ++pass) {
-        for (int i = 0; i <= nvec; ++i) {
-          const Real hij = dot_coupled_composite(w_p, w_ib, Vp[i], Vib[i]);
-          h[i][nvec] += hij;
-          saxpy_coupled_composite(w_p, w_ib, -hij, Vp[i], Vib[i], active_masks);
-        }
+    while (iter < cycle_end) {
+      const Real rho_new = dot_coupled_composite(rhat_p, rhat_ib, rr_p, rr_ib);
+      if (!std::isfinite(rho_new)) {
+        breakdown = "non-finite rho";
+        cycle_breakdown = true;
+        break;
       }
-
-      h[nvec + 1][nvec] = std::sqrt(
-          std::max(dot_coupled_composite(w_p, w_ib, w_p, w_ib), Real(0.0)));
-
-      for (int i = 0; i < nvec; ++i)
-        apply_givens(cs[i], sn[i], h[i][nvec], h[i + 1][nvec]);
-
-      generate_givens(h[nvec][nvec], h[nvec + 1][nvec], cs[nvec], sn[nvec]);
-      apply_givens(cs[nvec], sn[nvec], h[nvec][nvec], h[nvec + 1][nvec]);
-      apply_givens(cs[nvec], sn[nvec], g[nvec], g[nvec + 1]);
-
-      resid = std::abs(g[nvec + 1]);
-      if (resid <= tol) {
-        ++nvec;
-        ++iter;
-        if (update_solution(nvec)) {
-          solution_updated = true;
-        } else {
-          breakdown = "GMRES Hessenberg breakdown";
-        }
+      if (std::abs(rho_new) < tiny) {
+        breakdown = "rho breakdown";
+        cycle_breakdown = true;
+        break;
+      }
+      const Real beta = (rho_new / rho) * (alpha / omega);
+      if (!std::isfinite(beta)) {
+        breakdown = "non-finite beta";
+        cycle_breakdown = true;
         break;
       }
 
-      if (h[nvec + 1][nvec] <= tiny) {
-        ++nvec;
-        ++iter;
-        if (update_solution(nvec)) {
-          solution_updated = true;
-        } else {
-          breakdown = "GMRES Hessenberg breakdown";
-        }
+      lincomb_coupled_composite(search_p, search_ib, 1.0_rt, search_p,
+                                search_ib, -omega, image_p, image_ib,
+                                active_masks);
+      lincomb_coupled_composite(search_p, search_ib, beta, search_p, search_ib,
+                                1.0_rt, rr_p, rr_ib, active_masks);
+
+      ApplyCompositeIBSchurOp(search_p, search_ib, image_p, image_ib,
+                              active_masks);
+      const Real rhat_image =
+          dot_coupled_composite(rhat_p, rhat_ib, image_p, image_ib);
+      if (!std::isfinite(rhat_image)) {
+        breakdown = "non-finite rhat-v";
+        cycle_breakdown = true;
+        break;
+      }
+      if (std::abs(rhat_image) < tiny) {
+        breakdown = "rhat-v breakdown";
+        cycle_breakdown = true;
+        break;
+      }
+      alpha = rho_new / rhat_image;
+      if (!std::isfinite(alpha)) {
+        breakdown = "non-finite alpha";
+        cycle_breakdown = true;
         break;
       }
 
-      copy_composite(Vp[nvec + 1], w_p, active_masks);
-      Vib[nvec + 1] = w_ib;
-      scale_coupled_composite(Vp[nvec + 1], Vib[nvec + 1],
-                              1.0_rt / h[nvec + 1][nvec], active_masks);
+      lincomb_coupled_composite(intermediate_p, intermediate_ib, 1.0_rt, rr_p,
+                                rr_ib, -alpha, image_p, image_ib, active_masks);
+      const Real intermediate_resid2 = dot_coupled_composite(
+          intermediate_p, intermediate_ib, intermediate_p, intermediate_ib);
+      if (!std::isfinite(intermediate_resid2)) {
+        breakdown = "non-finite residual";
+        cycle_breakdown = true;
+        break;
+      }
+      if (intermediate_resid2 <= tol2) {
+        saxpy_coupled_composite(p, m_ib_force, alpha, search_p, search_ib,
+                                active_masks);
+        ++iter;
+        break;
+      }
+
+      ApplyCompositeIBSchurOp(intermediate_p, intermediate_ib,
+                              image_intermediate_p, image_intermediate_ib,
+                              active_masks);
+      const Real image_norm2 =
+          dot_coupled_composite(image_intermediate_p, image_intermediate_ib,
+                                image_intermediate_p, image_intermediate_ib);
+      if (!std::isfinite(image_norm2)) {
+        breakdown = "non-finite t-t";
+        cycle_breakdown = true;
+        break;
+      }
+      omega = (image_norm2 > tiny)
+                  ? dot_coupled_composite(image_intermediate_p,
+                                          image_intermediate_ib, intermediate_p,
+                                          intermediate_ib) /
+                        image_norm2
+                  : 0.0_rt;
+      if (!std::isfinite(omega)) {
+        breakdown = "non-finite omega";
+        cycle_breakdown = true;
+        break;
+      }
+
+      saxpy_coupled_composite(p, m_ib_force, alpha, search_p, search_ib,
+                              active_masks);
+      saxpy_coupled_composite(p, m_ib_force, omega, intermediate_p,
+                              intermediate_ib, active_masks);
+      lincomb_coupled_composite(rr_p, rr_ib, 1.0_rt, intermediate_p,
+                                intermediate_ib, -omega, image_intermediate_p,
+                                image_intermediate_ib, active_masks);
+
+      rho = rho_new;
+      const Real recursive_resid2 =
+          dot_coupled_composite(rr_p, rr_ib, rr_p, rr_ib);
+      ++iter;
+      if (std::abs(omega) < tiny) {
+        breakdown = "omega breakdown";
+        cycle_breakdown = true;
+        break;
+      }
+      if (!std::isfinite(recursive_resid2)) {
+        breakdown = "non-finite residual";
+        cycle_breakdown = true;
+        break;
+      }
+      if (recursive_resid2 <= tol2)
+        break;
     }
 
-    if (breakdown != nullptr)
+    if (cycle_breakdown)
       break;
-
-    if (!solution_updated && nvec > 0 && !update_solution(nvec)) {
-      breakdown = "GMRES Hessenberg breakdown";
-      break;
-    }
-
-    resid = evaluate_residual().norm();
-    remember_current_if_better(resid);
   }
 
   if (m_pressure_singular)
     subtract_composite_mean(p, active_masks);
+
+  resid = evaluate_residual().norm();
+  remember_current_if_better(resid);
 
   bool converged = std::isfinite(resid) && resid <= tol;
   if (!converged && std::isfinite(best_resid)) {
@@ -1126,9 +1146,9 @@ int INSSolver::SolveCompositeIBProjection(
                 std::max(rhs_p_norm2, Real(1.0e-300)));
 
   if (!converged && pre_block_pressure_relres > m_poisson_tol) {
-    // Cheap block cleanup after coupled GMRES breaks down.  This is not the
-    // exact eliminated Schur complement; it only prevents a bad force iterate
-    // from leaving a large pressure/divergence residual behind.
+    // This is not the exact eliminated Schur complement; it prevents a bad
+    // force iterate from leaving a large pressure/divergence residual after
+    // coupled BiCGStab stops.
     for (int block_iter = 0; block_iter < 4; ++block_iter) {
       ApplyCompositeIBSchurOp(p, zero_force, Ax_p, Ax_ib, active_masks);
       std::vector<Real> rhs_force(rhs_ib.size(), 0.0_rt);
@@ -1215,7 +1235,8 @@ int INSSolver::SolveCompositeIBProjection(
     } else {
       msg << " failed to converge";
     }
-    msg << "; the coupled IB system may be singular or rank deficient"
+    msg << "; the coupled IB system may be singular, rank deficient, or "
+           "ill-conditioned"
         << " (levels = " << finest_level + 1
         << ", finest_level = " << finest_level
         << ", markers = " << m_ib_geometry.markers.size()
@@ -1230,7 +1251,7 @@ int INSSolver::SolveCompositeIBProjection(
 
   if (m_verbose > 1) {
     const Real relres = resid / rhs_norm;
-    Print() << "  Composite IB GMRES(" << restart << "): " << iter
+    Print() << "  Composite IB BiCGStab: " << iter
             << " iters, |r|/|rhs| = " << relres << "\n";
   }
   return iter;

@@ -4,7 +4,7 @@ description: Records a settled architectural decision after a multi-turn back-an
 type: feedback
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-**Rule**: when replacing the current hand-rolled coupled GMRES solver,
+**Rule**: when replacing the current hand-rolled coupled BiCGStab solver,
 implement the Taira–Colonius IBPM operator `S = Q^T B^N Q` matrix-free
 as a `Tpetra::Operator`.  Do **not** assemble it as a
 `Tpetra::CrsMatrix` and hand to AMG.

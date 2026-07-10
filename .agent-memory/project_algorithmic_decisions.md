@@ -228,22 +228,26 @@ Decisions baked into the current solver, with rationale:
     active limit.
 
 14. **The first IB projection path is executable but hand-rolled**
-    (added 2026-05-20).  `IBGeometry` loads 2D ASCII curves or 3D
+    (added 2026-05-20; coupled solver changed to BiCGStab 2026-07-10).
+    `IBGeometry` loads 2D ASCII curves or 3D
     ASCII/binary STL surfaces, builds one marker per element centroid,
     stores host/device points/elements/markers as AMReX `GpuArray`
     records, and uploads device copies.  `INSSolver_IB.cpp` implements
     Peskin 4-point `H/E` as marker-centred finite-support kernels,
     owner-mask interpolation plus atomics to avoid double-counted shared
     faces, and GPU-ready IB refinement tagging.  The coupled AMR IB solve is
-    an in-repo restarted-GMRES composite hierarchy solve for
+    an in-repo BiCGStab composite hierarchy solve for
     `[-D; E] B^N [G H] [p; f]`.  Non-singular systems use a checked
     AMReX Poisson pressure-block initial guess; singular systems retain
-    the checked older block warm start.  IB
+    the checked older block warm start.  The recurrence is periodically
+    replaced by the true matrix-free residual and the best exact-residual
+    iterate is retained for breakdown recovery.  IB
     coupling is applied only on the finest AMR level; coarser active
     pressure equations remain part of the same Krylov solve.  The supplied
     IB smoke cases are:
     `tests/3d/ib_plane`, `tests/3d/ib_plane_amr`, and
     `tests/3d/ib_cylinder_channel`.  The cylinder case intentionally uses an
-    STL panel size near `1.5 * dx` because GMRES still lacks an in-iteration
-    IB block preconditioner and is sensitive to over-refined marker meshes.
+    STL panel size near `1.5 * dx` because the coupled solver still lacks an
+    in-iteration IB block preconditioner and is sensitive to over-refined
+    marker meshes.
     The planned Tpetra/Belos + MLMG preconditioning remains future work.

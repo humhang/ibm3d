@@ -59,22 +59,37 @@ Code: `ComputeTG2DError` + the tg2d branch in `InitFlowField` +
 the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
 `Advance` (`m_advect_old`, `m_ab2_valid`).
 
-**IB smoke tests (2026-05-20):**
+**IB smoke tests (added 2026-05-20; coupled BiCGStab rerun 2026-07-10):**
 
 - `tests/3d/ib_plane/inputs.ib_plane` — single-level two-triangle STL
   plane in the Taylor–Green field.  One step gives
   `|E u - U_ib|_inf ≈ 2.0e-10`, `|div u|_inf ≈ 6.6e-12`.
 - `tests/3d/ib_plane_amr/inputs.ib_plane_amr` — same geometry with one
   refinement level.  Vorticity tags plus IB tags keep the body on the
-  finest mesh.  One step gives `|E u - U_ib|_inf ≈ 2.1e-10`,
-  `|div u|_inf ≈ 2.7e-11`.
+  finest mesh.  One step gives combined relative residual `6.0e-11`,
+  `|E u - U_ib|_inf ≈ 1.5e-10`, and `|div u|_inf ≈ 2.0e-11`.
+- `tests/2d/ib_square_amr/inputs.ib_square_amr` — one refinement level,
+  singular periodic pressure system.  One step converges in 821 iterations
+  to combined relative residual `8.8e-11`, marker slip `2.0e-11`, and
+  `|div u|_inf ≈ 1.2e-11`.
 - `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` — channel
   flow past a stationary radius-0.125 cylinder, with STL panel sizes
-  near `1.5 * dx` because coupled GMRES has no in-iteration IB block
+  near `1.5 * dx` because coupled BiCGStab has no in-iteration IB block
   preconditioner.
-  One step gives roughly O(100-300) composite IB GMRES iterations at `1e-4`
+  One step gives roughly O(100-300) composite IB BiCGStab iterations at `1e-4`
   relative residual, `|E u - U_ib|_inf ≈ 2e-3`, and
   `|div u|_inf ≈ 1.5e-4`.
+- `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` remains the
+  conditioning stress case.  A one-step four-level run reaches the 4000
+  iteration limit at combined relative residual `1.4e-4` for a requested
+  `1e-5`; marker slip is `4.5e-4`, much smaller than the former GMRES
+  failure, but the remaining pressure residual leaves
+  `|div u|_inf ≈ 1.1e-3`.
+- `tests/2d/ib_cylinder_re100_coarse/inputs.ib_cylinder_re100_coarse` keeps
+  the same physical problem and base grid but uses one refinement level and
+  24 markers.  A one-step local run converges in 3189 iterations to combined
+  relative residual `9.7e-6`, marker slip `1.5e-5`, and
+  `|div u|_inf ≈ 9.3e-5`.
 
 **Composite C/F regression (2026-07-09):**
 

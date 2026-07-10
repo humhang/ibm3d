@@ -8,7 +8,7 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 solver implementing the **Taira–Colonius immersed-boundary projection method**
 (JCP 2007, doi.org/10.1016/j.jcp.2007.03.005) on top of AMReX.
 
-**Current status (updated 2026-07-09)**: the NS+AMR substrate is
+**Current status (updated 2026-07-10)**: the NS+AMR substrate is
 implemented and verified, and the first prescribed-velocity
 Taira–Colonius IB projection path uses a composite pressure hierarchy with
 the Lagrangian coupling attached only to the finest AMR level.
@@ -32,7 +32,7 @@ the Lagrangian coupling attached only to the finest AMR level.
   markers using AMReX `GpuArray` records; marker weights are line length
   in 2D or triangle area in 3D.
 - The coupled AMR IB projection solves a composite hierarchy system
-  `[-D; E] B^N [G H] [p; f]` with in-repo restarted GMRES.  Non-singular
+  `[-D; E] B^N [G H] [p; f]` with in-repo BiCGStab.  Non-singular
   systems use a checked AMReX Poisson pressure-block initial guess;
   singular systems retain the checked older block warm start.  `H`
   spreads force components to matching MAC
@@ -59,7 +59,7 @@ with device copies, element-centroid markers in `IBGeometry`, Peskin
 4-point spread/interp, GPU-ready finest-level IB tagging, and the
 coupled projection in `ProjectPerot`.  The Tpetra/Belos wrapper and full
 MLMG preconditioner are still future work; the initial path uses an in-repo
-restarted-GMRES solver with checked pressure-block warm starts so the
+BiCGStab solver with checked pressure-block warm starts so the
 operator is executable immediately.
 
 **How to apply:** keep the Perot `B^N` consistency across predictor,
