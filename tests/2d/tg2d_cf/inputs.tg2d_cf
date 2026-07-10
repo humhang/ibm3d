@@ -1,0 +1,41 @@
+# ============================================================
+# inputs.tg2d_cf - convecting Taylor-Green across a C/F interface
+#
+# The high-vorticity regions are only partially refined. This is a
+# short regression for hierarchy pressure interpolation and every
+# intermediate term in the B^N face polynomial.
+# ============================================================
+
+geometry.prob_lo     =  0.0                0.0
+geometry.prob_hi     =  6.283185307179586  6.283185307179586
+geometry.is_periodic =  1  1
+
+amr.n_cell           =  32  32
+amr.max_level        =  1
+amr.ref_ratio        =  2
+amr.blocking_factor  =  4
+amr.max_grid_size    =  16
+amr.n_error_buf      =  1
+amr.grid_eff         =  0.7
+amr.v                =  0
+
+ins.bc_xlo = periodic
+ins.bc_xhi = periodic
+ins.bc_ylo = periodic
+ins.bc_yhi = periodic
+
+ins.ic               =  tg2d
+ins.tg_uc            =  0.5
+ins.tg_vc            =  0.25
+ins.nu               =  5.0e-2
+ins.cfl              =  0.4
+ins.fixed_dt         =  2.5e-4
+ins.t_stop           =  1.25e-3
+ins.max_step         =  5
+ins.plot_int         =  0
+ins.cn_order         =  2
+ins.regrid_int       =  0
+ins.refine_vort      =  1.5
+ins.poisson_tol      =  1.0e-12
+ins.poisson_max_iter =  2000
+ins.verbose          =  2

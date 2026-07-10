@@ -70,10 +70,20 @@ the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
   `|div u|_inf ≈ 2.7e-11`.
 - `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` — channel
   flow past a stationary radius-0.125 cylinder, with STL panel sizes
-  near `1.5 * dx` for the current unpreconditioned coupled solver.
+  near `1.5 * dx` because coupled GMRES has no in-iteration IB block
+  preconditioner.
   One step gives roughly O(100-300) composite IB GMRES iterations at `1e-4`
   relative residual, `|E u - U_ib|_inf ≈ 2e-3`, and
   `|div u|_inf ≈ 1.5e-4`.
+
+**Composite C/F regression (2026-07-09):**
+
+- `tests/2d/tg2d_cf/inputs.tg2d_cf` convects Taylor–Green through a partial
+  refinement boundary for five short steps.  Composite BiCGStab reaches a
+  true relative residual of about `9e-13`; `|div u|_inf` remains between
+  `2e-15` and `4e-15`.  This case specifically guards hierarchy application
+  of every `B^N` term and conservative-linear pressure interpolation with
+  physical-BC-filled scratch data.
 
 **Takeaway:** discretisation is correct at its design rate
 (2nd/2nd).  When verifying any time-stepping change, run the

@@ -10,8 +10,9 @@ YC = 0.0
 DIAMETER = 1.0
 RADIUS = 0.5 * DIAMETER
 
-# With finest dx = D / 80, this gives ds ~= 2.6 dx. The current
-# unpreconditioned coupled IB solve is sensitive to over-dense markers.
+# With finest dx = D / 80, this gives ds ~= 2.6 dx. Coupled GMRES still
+# lacks an in-iteration IB block preconditioner and is sensitive to
+# over-dense markers.
 N_SEGMENTS = 96
 
 

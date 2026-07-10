@@ -7,8 +7,9 @@ built on AMReX with multi-level support (`AmrCore`).  The solver now has
 an initial **Taira–Colonius immersed-boundary projection method**
 ([JCP 2007](https://doi.org/10.1016/j.jcp.2007.03.005)) — Perot 1997
 is its underlying fractional-step framework.  The current IB path handles
-prescribed IB velocity on loaded line/surface elements and applies the
-coupled projection on the finest AMR level.
+prescribed IB velocity on loaded line/surface elements.  Its pressure
+unknowns and equations span the AMR hierarchy, while the Lagrangian
+force columns and marker constraints are attached only to the finest level.
 
 ## Equations
 
@@ -24,7 +25,7 @@ $$
 | ----- | ------------ | -------------- |
 | `u`   | x-faces      | `(1,0,0)`      |
 | `v`   | y-faces      | `(0,1,0)`      |
-| `w`   | z-faces      | `(0,0,1)`      |
+| `w` (3D) | z-faces   | `(0,0,1)`      |
 | `p`   | cell centres | `(0,0,0)`      |
 
 ## Time stepping (per step, no temporal subcycling between levels)
@@ -40,7 +41,7 @@ solve (D B^N G) p = (1/dt) D u*                                  (modified Poiss
 u^{n+1} = u* − dt B^N G p                                        (projection)
 ```
 
-With `ib.geometry` set, the finest level instead solves the
+With `ib.geometry` set, the hierarchy instead solves the composite
 Taira-Colonius Schur system
 
 ```
@@ -52,9 +53,11 @@ and projects with `u^{n+1} = u* − dt B^N (G p + H f)`.  `H` spreads the
 IB force component-wise to the matching MAC face family, and `E`
 interpolates face velocity back to the same Lagrangian markers with
 marker-centred finite-support kernels and owner masks so shared patch
-faces are not double-counted.  The current implementation uses one
-marker per immersed element centroid, with element length/area as its
-quadrature weight.
+faces are not double-counted.  Pressure rows are active on every AMR
+level; `H`, `E`, and `f` exist only on the finest level to avoid an
+over-constrained coarse-grid marker system.  The current implementation
+uses one marker per immersed element centroid, with element length/area
+as its quadrature weight.
 
 Why the modified Poisson `D B^N G` and not the standard `∇²` of a
 Chorin projection?  Perot 1997 shows that the exact block-LU
@@ -73,9 +76,12 @@ The modified Poisson is solved matrix-free with BiCGStab.
 the face Laplacian, the cell divergence).  Its spectrum is `−k² · …`
 on a full periodic/Neumann level, so the code negates both the operator
 and the RHS before the Krylov solve.  Full-domain cases are effectively
-SPD after that sign flip; partial AMR levels with C/F Dirichlet ghosts
-are nonsymmetric, which is why the implementation uses BiCGStab.  No
-preconditioner currently.
+SPD after that sign flip; composite C/F interpolation and active-cell
+masking are not assumed symmetric, which is why the implementation uses
+BiCGStab.
+For non-singular systems, an AMReX composite-Poisson solve provides a
+checked pressure-block initial guess; the modified operator's true
+residual still controls acceptance.
 
 `ComputeDt` uses an unsplit advective CFL bound,
 `dt <= cfl / max(Σ_d |u_d|/dx_d)`, plus a diffusive cap required by the
@@ -98,13 +104,14 @@ it violates the `B^N` stability cap.
   values at the C/F interface.
 - Ghost cells at intra-level patch boundaries: `FillBoundary` (via
   `FillPatchSingleLevel`).  Ghost cells at C/F boundaries: interpolation
-  from coarse (`face_linear_interp` for velocity, `pc_interp` for
-  pressure) via `FillPatchTwoLevels`.
+  from coarse (`face_linear_interp` for velocity, `cell_cons_interp` for
+  pressure) via `FillPatchTwoLevels`; explicit pressure BC functors fill
+  the interpolation scratch at physical boundaries.
 - Refinement is driven by `|ω|` (cell-centred vorticity magnitude)
   exceeding `ins.refine_vort`.
-- The composite operator synchronizes the final `B^N(Gp [+ Hf])` face
-  correction before taking divergence.  Full refluxing through every
-  intermediate term in the `B^N` polynomial is still future work.
+- The predictor, modified-Poisson/IB operator, and projection apply `B^N`
+  across the hierarchy.  Every intermediate Laplacian term is averaged
+  down and FillPatched before the next stencil application.
 
 ## Boundary conditions
 
@@ -183,7 +190,7 @@ All standard operations are wired up as Zed tasks in `.zed/tasks.json`
 cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DAMReX_DIR=/path/to/amrex/install/lib/cmake/AMReX
-cmake --build build-debug --target ins_solver -j
+cmake --build build-debug --target ins_solver ins_solver_2d -j
 ln -sf build-debug/compile_commands.json compile_commands.json
 
 # Run single-level Taylor–Green vortex
@@ -191,6 +198,9 @@ ln -sf build-debug/compile_commands.json compile_commands.json
 
 # Run 2-level AMR Taylor–Green vortex
 ./build-debug/src/ins_solver tests/3d/tg_amr/inputs.tg_amr
+
+# Run native 2D Taylor–Green vortex
+./build-debug/src/ins_solver_2d tests/2d/tg2d/inputs.tg2d
 ```
 
 Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
@@ -202,6 +212,7 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 | ---- | ------------- |
 | `tests/2d/tg2d/inputs.tg2d` | Native 2D Taylor–Green analytic/self-convergence case for `ins_solver_2d`. |
 | `tests/2d/tg2d_amr/inputs.tg2d_amr` | Native 2D Taylor–Green AMR case for `ins_solver_2d`. |
+| `tests/2d/tg2d_cf/inputs.tg2d_cf` | Short convecting Taylor–Green regression across a partial C/F interface. |
 | `tests/2d/ib_square/inputs.ib_square` | Native 2D coupled IB projection smoke test for `ins_solver_2d`. |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR for `ins_solver_2d`. |
 | `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D AMR uniform flow past a stationary cylinder, `Re_D=100`, finest `D/dx=80`. |
@@ -212,7 +223,7 @@ Plotfiles are written every `ins.plot_int` steps to `plt#####` (or
 | `tests/3d/lid_amr/inputs.lid_amr` | AMR lid-driven cavity. |
 | `tests/3d/channel/inputs.channel` | Plane channel, uniform inflow / outflow, Re_h = 50. |
 | `tests/3d/ib_plane/inputs.ib_plane` | Single-level coupled IB projection smoke test with `ib_plane.stl`. |
-| `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection smoke test with AMR and `ib_plane.stl`. |
+| `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Composite AMR IB projection smoke test with finest-level marker coupling and `ib_plane.stl`. |
 | `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Channel past a stationary cylindrical IB surface; coarse `1.5dx` STL smoke case. |
 | `tests/3d/ib_sphere_re100/inputs.ib_sphere_re100` | 3D AMR uniform flow past a stationary sphere, `Re_D=100`, finest `D/dx=80`. |
 
@@ -230,17 +241,13 @@ the pressure, so the mean is not removed).
 - Moving/deforming-body kinematics beyond uniform prescribed
   `ib.velocity`.
 - Tpetra/Belos wrapping and MLMG preconditioning for the IB Schur
-  operator.  The current coupled AMR IB solve is still local
-  matrix-free GMRES, warm-started by the older block solve.
+  operator.  The current coupled AMR IB solve uses in-repo matrix-free
+  GMRES with checked pressure-block warm starts and cleanup, but no
+  in-iteration multilevel block preconditioner.
 - Temporal subcycling between AMR levels.
-- Full sync-solve refluxing through every term in the `B^N` polynomial
-  (the composite operator synchronizes the final face correction before
-  divergence; the projection still uses local level gradients plus
-  post-projection `average_down`).
 - Inhomogeneous Dirichlet data inside the truncated Neumann series
   (handled approximately: homogeneous in the series, re-imposed on
   `u*`/`u^{n+1}` afterwards — fine for low truncation order N).
-- Broader validation of composite AMR projection with non-periodic BCs
-  (the domain-boundary physical BC is applied per-level after FillPatch;
-  refinement is kept interior in the supplied tests so C/F and
-  domain boundaries don't coincide).
+- Broader long-time validation of composite AMR projection with
+  non-periodic BCs; the AMR lid and inflow/outflow smoke tests cover the
+  boundary/C/F interaction locally.

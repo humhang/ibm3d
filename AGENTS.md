@@ -10,8 +10,8 @@ Taira–Colonius IB path now loads geometry, builds element-centroid
 markers, and solves the coupled projection for prescribed IB velocity.
 The longer-term linear-algebra direction is still matrix-free
 `Tpetra::Operator` with AMReX `MLMG` as the preconditioner; the current
-executable coupled AMR path uses local restarted GMRES with a block
-warm start.
+executable coupled AMR path uses in-repo restarted GMRES with checked
+pressure-block warm starts and cleanup.
 
 Key decisions already settled, do not re-litigate:
 
@@ -27,7 +27,10 @@ Key decisions already settled, do not re-litigate:
   hand-rolled BiCGStab.  Coupled AMR IB solves use restarted GMRES on
   the composite hierarchy operator.  The current IB rows attach to this
   same operator as `[-D; E] B^N [G H]`; a Tpetra::Operator wrapper
-  remains the intended scalable linear-algebra interface.
+  remains the intended scalable linear-algebra interface.  For
+  non-singular systems, AMReX's composite Poisson solve supplies a
+  checked pressure-block initial guess; convergence is always judged
+  with the matrix-free modified operator.
 - **IB discretisation (current first pass)**: one Lagrangian marker at
   each line-segment/triangle centroid, element length/area as the
   quadrature weight, Peskin 4-point delta, component-wise MAC spreading
@@ -40,8 +43,8 @@ Key decisions already settled, do not re-litigate:
 - **`D B^N G` is negative semidefinite** (eigenvalues `−k² · …`).
   Both the operator (`ApplyModifiedPoissonOp`) and the RHS in
   `ProjectPerot` are negated so full-domain levels have the positive
-  sign.  Partial AMR levels with C/F Dirichlet ghosts are nonsymmetric,
-  so the solver uses BiCGStab.  The projection
+  sign.  Composite C/F interpolation and active-cell masking are not
+  assumed symmetric, so the solver uses BiCGStab.  The projection
   `u^{n+1} = u* − dt B^N G p` still uses the natural `+B^N G p`.
 - **Physical BCs** (`src/INSSolver_BC.cpp`): per-face `periodic` /
   `noslip` / `inflow` / `slip` / `outflow` from `ins.bc_<face>` +
@@ -49,16 +52,18 @@ Key decisions already settled, do not re-litigate:
   velocity ⇒ Dirichlet p=0.  `m_pressure_singular` (no outflow ⇒
   pure Neumann/periodic) gates the mean-pinning in
   `SolveModifiedPoisson` — do NOT subtract the mean when an outflow
-  is present.  AMReX FillPatch uses `PhysBCFunctNoOp` (good for
-  interior + C/F only); the staggered domain-boundary ghosts are
-  overwritten afterwards by `FillVelGhostPhys` / `FillPresGhostPhys`.
+  is present.  Velocity FillPatch uses `PhysBCFunctNoOp`, then explicitly
+  overwrites staggered domain-boundary ghosts with `FillVelGhostPhys`.
+  Pressure FillPatch supplies callbacks that call `FillPresGhostPhys` on
+  AMReX's interpolation scratch as well as the destination; this is required
+  by `cell_cons_interp` near physical boundaries.
   Inhomogeneous wall data is kept out of the Neumann series
   (homogeneous there) and re-imposed by `EnforceVelDirichlet` on
   `u*` and `u^{n+1}`.  Do not apply `FillVelGhostPhys` directly to a
   freshly computed pressure-gradient field before `ApplyBNFace`: the
   raw `G p` term must retain outflow `p=0` Dirichlet boundary faces.
-  Don't move BC handling into the generic AMReX BC functor — the
-  staggered normal/tangential split is the reason it's explicit.
+  Don't move staggered velocity BC handling into the generic AMReX BC
+  functor — the normal/tangential split is the reason it stays explicit.
   Outflow velocity ghost fill is **linear extrapolation**
   (`ghost = 2u(N) − u(N−1)`) so that the face Laplacian at the
   outflow boundary face is zero in the normal direction (`∂²u/∂n² = 0`
@@ -120,7 +125,7 @@ From the command palette: **`task: spawn`** → pick:
 | `Run: ins_solver MPI (…, 4 ranks)`       | `mpirun -np 4` run with a selected test input       |
 
 The configure tasks pass `-DAMReX_DIR=/Users/hang/opt/amrex-26.01/install/lib/cmake/AMReX`.
-Trilinos is **not** currently a dependency; when replacing the local
+Trilinos is **not** currently a dependency; when replacing the hand-rolled
 coupled GMRES with the planned Tpetra/Belos operator path, restore
 `find_package(Trilinos REQUIRED COMPONENTS Tpetra Belos Ifpack2
 Teuchos)` in the top-level `CMakeLists.txt` and re-add
@@ -144,6 +149,7 @@ run).  CodeLLDB is auto-installed on first use.
 | ----------------------------------------- | ---------------------------------------------------------- |
 | `tests/2d/tg2d/inputs.tg2d`               | Native 2D analytic Taylor–Green verification.              |
 | `tests/2d/tg2d_amr/inputs.tg2d_amr`       | Native 2D AMR Taylor–Green verification.                   |
+| `tests/2d/tg2d_cf/inputs.tg2d_cf`         | Convecting Taylor–Green across a partial C/F interface.    |
 | `tests/2d/ib_square/inputs.ib_square`     | Native 2D coupled IB projection smoke test.                |
 | `tests/2d/ib_square_amr/inputs.ib_square_amr` | Native 2D coupled IB projection smoke test with AMR.   |
 | `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` | 2D AMR flow past a stationary cylinder, Re_D=100, finest D/dx=80. |
@@ -154,7 +160,7 @@ run).  CodeLLDB is auto-installed on first use.
 | `tests/3d/lid_amr/inputs.lid_amr`         | AMR lid-driven cavity.                                     |
 | `tests/3d/channel/inputs.channel`         | Inflow/outflow — non-singular pressure (outflow Dirichlet).|
 | `tests/3d/ib_plane/inputs.ib_plane`       | Single-level coupled IB projection smoke test.             |
-| `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Finest-level coupled IB projection with AMR tagging.     |
+| `tests/3d/ib_plane_amr/inputs.ib_plane_amr` | Composite IB projection with finest-level marker coupling. |
 | `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` | Single-level channel flow past a stationary cylindrical IB surface. |
 | `tests/3d/ib_sphere_re100/inputs.ib_sphere_re100` | 3D AMR flow past a stationary sphere, Re_D=100, finest D/dx=80. |
 
@@ -167,16 +173,17 @@ toward Poiseuille.
 
 ## Conventions for changes
 
-- Keep new code in the existing file structure unless adding a
-  genuinely separate concern.  Extend `INSSolver_IB.cpp` for IB
-  spread/interp/coupled-Schur work; a wall BC would extend the existing
+- Keep new code in the existing file structure unless adding a genuinely
+  separate concern.  Extend `INSSolver_IB.cpp` for geometry, spread/interp,
+  and single-level IB kernels; hierarchy projection and coupled Krylov work
+  belongs in `INSSolver_Project.cpp`.  A wall BC extends the existing BC and
   diffusion/projection files.
 - Do **not** comment what the code does — only why, and only when
   non-obvious.  AMReX domain knowledge is the bar: anything explainable
   by reading AMReX docs is too obvious to comment.
 - Don't introduce new third-party deps without discussion.  AMReX + MPI
   is the current dependency surface; Trilinos returns when the
-  Tpetra/Belos wrapper replaces the local coupled GMRES path.
+  Tpetra/Belos wrapper replaces the hand-rolled coupled GMRES path.
 - Match the AMReX style of the surrounding code (`amrex::Real`,
   `amrex::Box`, `MFIter`, `ParallelFor`, etc.) rather than mixing in
   raw STL/MPI primitives.

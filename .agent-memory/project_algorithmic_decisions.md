@@ -1,6 +1,6 @@
 ---
 name: Project — algorithmic design decisions
-description: Records the numerical/algorithmic choices that aren't obvious from reading the code (why matrix-free modified Poisson, why truncated Neumann, what "approximate projection" looks like across AMR levels).
+description: Records the numerical/algorithmic choices that aren't obvious from reading the code (why matrix-free modified Poisson, why truncated Neumann, and how the composite AMR projection is coupled).
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
@@ -22,23 +22,28 @@ Decisions baked into the current solver, with rationale:
    convergence regime.  Increase `ins.cn_order` if `ν dt / h²` is large
    but still inside that cap.
 
-4. **Modified Poisson is matrix-free, not MLMG**.  The pressure step
+4. **The modified-Poisson operator and convergence test are matrix-free**.
+   The pressure step
    solves `(D B^N G) p = (1/dt) D u*` directly by composing
-   `ComputePressureGradient`, `ApplyBNFace`, and cell divergence.  We
-   still use AMReX `MultiFab`/FillPatch/average-down machinery, but
-   there is no current AMReX `MLMG` pressure solve and no `m_phi`
-   incremental pressure update.  This keeps the pure-NS substrate aligned
-   with the eventual Taira-Colonius IB saddle-point operator.
+   `ComputePressureGradient`, `ApplyCompositeBNFaces`, and cell divergence.
+   AMReX `MLPoisson` is used only to propose a checked initial guess for
+   non-singular pressure blocks; it is neither the modified operator nor an
+   in-iteration preconditioner, and acceptance uses the true matrix-free
+   residual.  There is no `m_phi` incremental pressure update.  This keeps
+   the pure-NS substrate aligned with the eventual Taira-Colonius IB
+   saddle-point operator.
 
 5. **Modified-Poisson sign and Krylov choice**.  `D B^N G` is negative
    semidefinite on full periodic/Neumann levels, so
    `ApplyModifiedPoissonOp` returns `-D B^N G` and `ProjectPerot` builds
    `rhs = -(1/dt) D u*`.  Full-domain levels then have the positive sign,
-   but partial AMR levels with C/F Dirichlet ghosts are nonsymmetric; the
-   current solver therefore uses matrix-free **BiCGStab**, not CG.  The
-   old AMReX `MLPoisson` sign note remains useful historical context in
-   `reference_mlpoisson_sign.md`, but MLMG is not in the active pressure
-   path.
+   but composite C/F interpolation and active-cell masking are not assumed
+   symmetric; the current solver therefore uses matrix-free **BiCGStab**,
+   not CG.  The
+   AMReX `MLPoisson` uses the opposite Laplacian sign, so the checked warm
+   start solves against a negated standard-Poisson RHS; see
+   `reference_mlpoisson_sign.md`.  It does not replace the active
+   matrix-free operator or its residual test.
 
 6. **Non-subcycled time stepping**.  Same `dt` on every AMR level, chosen
    from an unsplit advective CFL across all levels and the finest-level
@@ -53,10 +58,10 @@ Decisions baked into the current solver, with rationale:
    covered coarse cells are masked out of the active equations.  With IB
    enabled, the Lagrangian force vector is part of the same Krylov vector,
    but the IB rows/force columns are applied only on the finest level to
-   avoid the over-dense coarse marker system.  The operator synchronizes the
-   final `B^N(Gp [+ Hf])` face correction fine-to-coarse before divergence.
-   Full refluxing through every intermediate term in the `B^N` polynomial is
-   still future work.
+   avoid the over-dense coarse marker system.  Every intermediate term in
+   `B^N(Gp [+ Hf])` is averaged fine-to-coarse and FillPatched at C/F before
+   the next face Laplacian; the final face correction is synchronized before
+   divergence.
 
 8. **Vorticity-based refinement tagging**.  `ErrorEst` computes
    `|ω|` at cell centres from averaged face velocities and tags cells
@@ -81,9 +86,10 @@ Decisions baked into the current solver, with rationale:
    - **Staggered handling**: normal component sits on the boundary
      face (set directly for Dirichlet, extrapolated for outflow);
      tangential components reflected about the wall value half a
-     cell out.  AMReX FillPatch keeps `PhysBCFunctNoOp` (interior +
-     C/F only); domain-boundary ghosts overwritten afterwards by
-     `FillVelGhostPhys`/`FillPresGhostPhys`.
+     cell out.  Velocity FillPatch keeps `PhysBCFunctNoOp` and explicitly
+     applies `FillVelGhostPhys` afterwards.  Pressure FillPatch uses
+     `FillPresGhostPhys` callbacks so AMReX's coarse interpolation scratch
+     also receives valid physical ghosts.
    - **Inhomogeneous data + Neumann series**: the iterated `(εL)^k`
      terms in `B^N` use HOMOGENEOUS wall data; the prescribed
      velocity is re-imposed on `u*` and `u^{n+1}` by
@@ -93,7 +99,7 @@ Decisions baked into the current solver, with rationale:
      and `tests/3d/channel/inputs.channel` have been run-verified.  The channel case is
      the outflow-Dirichlet pressure check.
 
-10. **Per-level operator must zero its coarse–fine ghosts**
+10. **The legacy per-level warm-start operator must zero its C/F ghosts**
     (bug found + fixed 2026-05-18, `tests/3d/lid_amr/inputs.lid_amr`).  The per-level
     modified-Poisson Krylov path (`SolveModifiedPoisson` / `ApplyBNFace` /
     `ApplyModifiedPoissonOp`) only fills ghosts via `FillBoundary` +
@@ -106,7 +112,7 @@ Decisions baked into the current solver, with rationale:
     `refine_vort` tagged the whole domain, so the fine level was the
     full (periodic) domain with no interior C/F interface.
     The lid-cavity AMR debugging on 2026-05-18 turned out to be a
-    **cascade of four distinct bugs**, all fixed; the final working
+    **cascade of five distinct bugs**, all fixed; the final working
     scheme is recorded here so nobody re-derives it:
 
     1. **dt / Neumann-series stability** (`ComputeDt`).  `B^N` only
@@ -139,25 +145,17 @@ Decisions baked into the current solver, with rationale:
        only).  Preserves periodic-TG-AMR (fine = full periodic domain
        → still pinned).
 
-    4. **C/F pressure interp must be piecewise-constant**, not
-       conservative-linear.  `FillPatchTwoLevels` builds an internal
-       coarse scratch, fills only its valid from the coarse source,
-       then runs the coarse BC functor — which is `PhysBCFunctNoOp`,
-       so the scratch's domain ghosts stay uninitialised.
-       `lincc_interp` computes slopes that read them → NaN for fine
-       patches hugging a wall.  `&pc_interp` uses no slopes → immune.
-       (Filling the *real* coarse MF's ghosts does NOT help — FillPatch
-       uses its own scratch.)  **This applies to THREE pressure
-       interpolation sites**, all must use `pc_interp`:
-       `FillCellPatch` (every step), AND the regrid hooks
-       `MakeNewLevelFromCoarse` (InterpFromCoarseLevel) and
-       `RemakeLevel` (FillPatchTwoLevels).  The regrid hooks were
-       missed in the first pass → the lid cavity ran fine until the
-       first regrid (step 10, `regrid_int=10`), then NaN'd in the
-       pressure near the no-slip wall.  Velocity interp uses
-       `face_linear_interp` which is slope-free → immune (leave it).
-       If you ever add another coarse→fine pressure interpolation,
-       use `pc_interp`.
+    4. **C/F pressure interpolation is conservative-linear with an
+       explicit physical-BC functor.** `FillPatchTwoLevels` builds an
+       internal coarse scratch.  `PhysBCFunctNoOp` leaves the scratch's
+       outside-domain cells as NaNs, so linear slopes fail when a fine
+       patch touches a wall; filling only the real coarse MultiFab does
+       not fix that scratch.  The correct repair is to call
+       `FillPresGhostPhys` from the FillPatch coarse/fine BC functors and
+       use `cell_cons_interp`.  This applies to `FillCellPatch`,
+       `MakeNewLevelFromCoarse`, and `RemakeLevel`.  The former
+       `pc_interp` workaround avoided NaNs but imposed an O(dx) pressure
+       jump at every C/F interface.
 
     5. **Per-level operator is non-symmetric → use BiCGStab, not CG**.
        Once a fine patch has a C/F interface the staggered `B^N` plus
@@ -168,16 +166,17 @@ Decisions baked into the current solver, with rationale:
        breakdown guards.  Converges ~80–190 iters/level to 1e-11 on
        all three lid-cavity AMR levels.
 
-    **Verified 2026-05-18**: single-level lid `|div u|~3e-11`;
-    1-level AMR lid stable, `|u|` tracks single-level, `|div u|~1e-2`
-    at C/F; full 2-level `tests/3d/lid_amr/inputs.lid_amr` stable, `|u|` 0.07→0.23
-    smooth, `|div u|~2e-2` (bounded, steady).  Those older residuals came
-    from the former per-level projection path; current pressure solves use
-    the composite hierarchy operator, but nonperiodic AMR plus full
-    `B^N`-term refluxing still needs broader validation.  Do NOT
-    "simplify" away: the four `setVal(0)`/buffer choices, the
-    `pc_interp`, the `level_singular` gate, and BiCGStab are all
-    load-bearing.
+    **Updated 2026-07-09**: the predictor, modified-Poisson/IB operator,
+    and projection now apply every `B^N` term across the hierarchy.
+    Before each face Laplacian, covered coarse faces are averaged down
+    and fine C/F ghosts are FillPatched from the current coarse term.
+    A partial-grid convecting Taylor–Green test converges to a true
+    residual near 1e-12 with `|div u|` near machine precision; the old
+    level-local zero C/F terms produced O(1e-2) velocity jumps despite
+    the same reported Krylov tolerance.  BiCGStab periodically replaces
+    its recursive residual with the true composite residual.  Keep the
+    hierarchy `B^N`, explicit pressure BC functors, `level_singular`
+    gate, and nonsymmetric Krylov treatment together.
 
 11. **AB2 advection + cn_order=2 default → 2nd-order in time**
     (added 2026-05-19).  The advection term in the predictor is now
@@ -228,7 +227,7 @@ Decisions baked into the current solver, with rationale:
     advective dt immediately; the diffusive `B^N` cap may still be the
     active limit.
 
-14. **First IB projection path is executable but deliberately local**
+14. **The first IB projection path is executable but hand-rolled**
     (added 2026-05-20).  `IBGeometry` loads 2D ASCII curves or 3D
     ASCII/binary STL surfaces, builds one marker per element centroid,
     stores host/device points/elements/markers as AMReX `GpuArray`
@@ -236,13 +235,15 @@ Decisions baked into the current solver, with rationale:
     Peskin 4-point `H/E` as marker-centred finite-support kernels,
     owner-mask interpolation plus atomics to avoid double-counted shared
     faces, and GPU-ready IB refinement tagging.  The coupled AMR IB solve is
-    a local restarted-GMRES composite hierarchy solve for
-    `[-D; E] B^N [G H] [p; f]`, warm-started by the older block solve.  IB
+    an in-repo restarted-GMRES composite hierarchy solve for
+    `[-D; E] B^N [G H] [p; f]`.  Non-singular systems use a checked
+    AMReX Poisson pressure-block initial guess; singular systems retain
+    the checked older block warm start.  IB
     coupling is applied only on the finest AMR level; coarser active
     pressure equations remain part of the same Krylov solve.  The supplied
     IB smoke cases are:
     `tests/3d/ib_plane`, `tests/3d/ib_plane_amr`, and
     `tests/3d/ib_cylinder_channel`.  The cylinder case intentionally uses an
-    STL panel size near `1.5 * dx` because the current unpreconditioned
-    coupled solve is sensitive to over-refined IB meshes.  The planned
-    Tpetra/Belos + MLMG path remains future work.
+    STL panel size near `1.5 * dx` because GMRES still lacks an in-iteration
+    IB block preconditioner and is sensitive to over-refined marker meshes.
+    The planned Tpetra/Belos + MLMG preconditioning remains future work.

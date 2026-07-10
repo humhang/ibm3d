@@ -208,9 +208,9 @@ public:
       int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &adv,
       const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel_in);
 
-  /// CN predictor: u* = B^N [ (I + εL) u^n + dt A^n ].   NO pressure term.
-  void ApplyCNDiffusion(
-      int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &vstar,
+  /// Build (I + εL) u^n + dt A^n before the hierarchy B^N application.
+  void BuildCNPredictorRHS(
+      int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &rhs,
       const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel_in,
       const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &adv);
 
@@ -224,6 +224,10 @@ public:
   /// The k>=1 work term fills its own homogeneous ghosts before each L.
   void ApplyBNFace(int lev, int dir, const amrex::MultiFab &src,
                    amrex::MultiFab &dst);
+
+  /// Apply B^N to a face hierarchy, filling C/F ghosts before every L.
+  void ApplyCompositeBNFaces(amrex::Vector<FaceMFArray> &src,
+                             amrex::Vector<FaceMFArray> &dst);
 
   /// Apply the modified-Poisson operator (D B^N G) to a cell-centred φ.
   /// `phi` must have its 1-cell ghost layer filled.
@@ -254,11 +258,21 @@ public:
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
+  void ApplyCompositeProjectionBlocks(
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
+      const std::vector<amrex::Real> *force,
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result_p,
+      std::vector<amrex::Real> *result_ib,
+      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
   void ApplyCompositeIBSchurOp(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
       const std::vector<amrex::Real> &force,
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result_p,
       std::vector<amrex::Real> &result_ib,
+      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
+  void ApplyCompositePoissonPreconditioner(
+      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
+      const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
   int SolveCompositeModifiedPoisson(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
@@ -275,13 +289,14 @@ public:
   void CheckOutflowPressurePin();
 
   /// Perot projection across all levels: hierarchy modified-Poisson or
-  /// coupled IB solve, per-level u^{n+1} = u* − dt B^N G p, then
+  /// coupled IB solve, hierarchy u^{n+1} = u* − dt B^N G p, then
   /// fine→coarse sync.
   void ProjectPerot();
 
   // FillPatch helpers
   void FillFacePatch(int lev, int dir, amrex::Vector<FaceMFArray> &source,
-                     amrex::MultiFab &dst, amrex::Real time);
+                     amrex::MultiFab &dst, amrex::Real time,
+                     bool homogeneous = false);
   void FillCellPatch(int lev,
                      amrex::Vector<std::unique_ptr<amrex::MultiFab>> &source,
                      amrex::MultiFab &dst, amrex::Real time,

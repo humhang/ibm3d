@@ -2,7 +2,7 @@
 # inputs.ib_cylinder_channel — channel flow past a stationary cylinder
 #
 # This is a more geometric IB smoke case built from tests/3d/channel.
-# The current coupled IB projection is still local and unpreconditioned,
+# The in-repo coupled GMRES has no in-iteration IB block preconditioner,
 # so this case deliberately uses an IB panel size near 1.5 * dx instead
 # of a finer body mesh.
 #

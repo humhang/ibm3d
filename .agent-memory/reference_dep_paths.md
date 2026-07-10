@@ -14,7 +14,7 @@ AMReX 26.01 (currently used):
 - No OpenMP, no SIMD, no GPU backend
 
 Trilinos 17.0.0 (not active in the current build; needed when replacing
-the local IB GMRES path with the planned Tpetra/Belos solve):
+the hand-rolled IB GMRES path with the planned Tpetra/Belos solve):
 
 - Install prefix: `/Users/hang/opt/trilinos-17.0.0/install`
 - CMake config dir: `/Users/hang/opt/trilinos-17.0.0/install/lib/cmake/Trilinos`
@@ -22,9 +22,9 @@ the local IB GMRES path with the planned Tpetra/Belos solve):
 - Components needed for IBPM: `Tpetra`, `Belos`, `Ifpack2`, `Teuchos`
   (and `Kokkos` is pulled in transitively)
 
-These paths are baked into `.zed/tasks.json` as `-DAMReX_DIR=…` and
-`-DTrilinos_DIR=…` on the configure commands.  If the installs move,
-update those task strings in addition to whatever CMakeLists changes.
+The AMReX path is used by the configure tasks.  Re-add the Trilinos path
+to those tasks only when Trilinos returns to `CMakeLists.txt`.  If the
+installs move, update the task strings in addition to the CMake changes.
 
 `.zed/` is gitignored because of these absolute paths — do not commit
 the tasks file as-is.

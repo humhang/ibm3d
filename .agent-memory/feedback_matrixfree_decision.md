@@ -1,10 +1,10 @@
 ---
 name: Feedback — matrix-free is the agreed design for the scalable IB Poisson
-description: Records a settled architectural decision after a multi-turn back-and-forth, so future agents don't re-litigate it when replacing the local IB prototype.
+description: Records a settled architectural decision after a multi-turn back-and-forth, so future agents don't re-litigate it when replacing the hand-rolled IB solver.
 type: feedback
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-**Rule**: when replacing the current local coupled GMRES prototype,
+**Rule**: when replacing the current hand-rolled coupled GMRES solver,
 implement the Taira–Colonius IBPM operator `S = Q^T B^N Q` matrix-free
 as a `Tpetra::Operator`.  Do **not** assemble it as a
 `Tpetra::CrsMatrix` and hand to AMG.
@@ -29,8 +29,10 @@ recommendation in the follow-up.
 - When the scalable IB solve begins, build the operator as a
   `Tpetra::Operator` subclass that calls AMReX-side `apply()` routines
   (spread, grad, polynomial-in-L, divergence, interpolate).
-- Use Belos CG for the outer Krylov solve (system is SPD after the
-  BN approximation).
+- Start with Belos GMRES for the outer Krylov solve.  The formal conforming
+  operator is symmetric under the correct adjoint weighting, but the current
+  C/F interpolation and masking are not assumed symmetric; use CG only after
+  the implemented composite operator passes an adjointness/SPD check.
 - Use AMReX `MLMG` wrapped as a `Tpetra::Operator` for the
   preconditioner — the standard Poisson is a good local approximation
   to the modified Poisson away from the IB.

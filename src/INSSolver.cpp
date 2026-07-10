@@ -232,20 +232,34 @@ void INSSolver::MakeNewLevelFromCoarse(int lev, Real time, const BoxArray &ba,
 
   AllocateLevelStorage(lev, ba, dm);
 
-  PhysBCFunctNoOp bc_func;
   for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+    auto make_bc = [this, dir](int bc_lev) {
+      return [this, bc_lev, dir](MultiFab &mf, int, int, const IntVect &, Real,
+                                 int) {
+        FillVelGhostPhys(bc_lev, dir, mf, /*homogeneous=*/false);
+      };
+    };
+    auto coarse_bc = make_bc(lev - 1);
+    auto fine_bc = make_bc(lev);
+    FillVelGhostPhys(lev - 1, dir, *m_vel[lev - 1][dir],
+                     /*homogeneous=*/false);
     InterpFromCoarseLevel(*m_vel[lev][dir], time, *m_vel[lev - 1][dir], 0, 0, 1,
-                          geom[lev - 1], geom[lev], bc_func, 0, bc_func, 0,
+                          geom[lev - 1], geom[lev], coarse_bc, 0, fine_bc, 0,
                           ref_ratio[lev - 1], &face_linear_interp,
                           m_bc_vel[dir], 0);
   }
-  // pc_interp, not lincc_interp: conservative-linear's limited slopes
-  // read the coarse scratch's domain ghosts, which InterpFromCoarseLevel
-  // leaves uninitialised under PhysBCFunctNoOp → NaN pressure when a
-  // newly-refined patch hugs a no-slip wall (lid cavity, on regrid).
+  auto make_pres_bc = [this](int bc_lev) {
+    return [this, bc_lev](MultiFab &mf, int, int, const IntVect &, Real, int) {
+      FillPresGhostPhys(bc_lev, mf);
+    };
+  };
+  auto coarse_pres_bc = make_pres_bc(lev - 1);
+  auto fine_pres_bc = make_pres_bc(lev);
+  FillPresGhostPhys(lev - 1, *m_pressure[lev - 1]);
   InterpFromCoarseLevel(*m_pressure[lev], time, *m_pressure[lev - 1], 0, 0, 1,
-                        geom[lev - 1], geom[lev], bc_func, 0, bc_func, 0,
-                        ref_ratio[lev - 1], &pc_interp, m_bc_pres, 0);
+                        geom[lev - 1], geom[lev], coarse_pres_bc, 0,
+                        fine_pres_bc, 0, ref_ratio[lev - 1], &cell_cons_interp,
+                        m_bc_pres, 0);
 }
 
 void INSSolver::RemakeLevel(int lev, Real time, const BoxArray &ba,
@@ -261,25 +275,41 @@ void INSSolver::RemakeLevel(int lev, Real time, const BoxArray &ba,
 
   AllocateLevelStorage(lev, ba, dm);
 
-  PhysBCFunctNoOp bc_func;
   for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+    auto make_bc = [this, dir](int bc_lev) {
+      return [this, bc_lev, dir](MultiFab &mf, int, int, const IntVect &, Real,
+                                 int) {
+        FillVelGhostPhys(bc_lev, dir, mf, /*homogeneous=*/false);
+      };
+    };
+    auto coarse_bc = make_bc(lev - 1);
+    auto fine_bc = make_bc(lev);
+    FillVelGhostPhys(lev - 1, dir, *m_vel[lev - 1][dir],
+                     /*homogeneous=*/false);
+    FillVelGhostPhys(lev, dir, *old_vel[dir], /*homogeneous=*/false);
     Vector<MultiFab *> cmf{m_vel[lev - 1][dir].get()};
     Vector<MultiFab *> fmf{old_vel[dir].get()};
     Vector<Real> ct{time}, ft{time};
     FillPatchTwoLevels(*m_vel[lev][dir], time, cmf, ct, fmf, ft, 0, 0, 1,
-                       geom[lev - 1], geom[lev], bc_func, 0, bc_func, 0,
+                       geom[lev - 1], geom[lev], coarse_bc, 0, fine_bc, 0,
                        ref_ratio[lev - 1], &face_linear_interp, m_bc_vel[dir],
                        0);
   }
   {
+    auto make_bc = [this](int bc_lev) {
+      return [this, bc_lev](MultiFab &mf, int, int, const IntVect &, Real,
+                            int) { FillPresGhostPhys(bc_lev, mf); };
+    };
+    auto coarse_bc = make_bc(lev - 1);
+    auto fine_bc = make_bc(lev);
+    FillPresGhostPhys(lev - 1, *m_pressure[lev - 1]);
+    FillPresGhostPhys(lev, *old_pres);
     Vector<MultiFab *> cmf{m_pressure[lev - 1].get()};
     Vector<MultiFab *> fmf{old_pres.get()};
     Vector<Real> ct{time}, ft{time};
-    // pc_interp (see MakeNewLevelFromCoarse): lincc_interp NaNs the
-    // pressure on regrid when a remade patch touches a no-slip wall.
     FillPatchTwoLevels(*m_pressure[lev], time, cmf, ct, fmf, ft, 0, 0, 1,
-                       geom[lev - 1], geom[lev], bc_func, 0, bc_func, 0,
-                       ref_ratio[lev - 1], &pc_interp, m_bc_pres, 0);
+                       geom[lev - 1], geom[lev], coarse_bc, 0, fine_bc, 0,
+                       ref_ratio[lev - 1], &cell_cons_interp, m_bc_pres, 0);
   }
 }
 
@@ -482,6 +512,7 @@ void INSSolver::Advance() {
   BL_PROFILE("INSSolver::Advance()");
 
   const Real time = m_cur_time;
+  Vector<FaceMFArray> predictor_rhs(finest_level + 1);
 
   // ---- 1) Build u* on every level ----
   for (int lev = 0; lev <= finest_level; ++lev) {
@@ -499,11 +530,13 @@ void INSSolver::Advance() {
 
     std::array<MultiFab *, AMREX_SPACEDIM> adv_p;
     std::array<const MultiFab *, AMREX_SPACEDIM> u_n_p;
-    std::array<MultiFab *, AMREX_SPACEDIM> vs_p;
+    std::array<MultiFab *, AMREX_SPACEDIM> rhs_p;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
+      predictor_rhs[lev][d] = std::make_unique<MultiFab>(fba, dm, 1, 2);
       adv_p[d] = m_advect[lev][d].get();
       u_n_p[d] = &u_n[d];
-      vs_p[d] = m_vstar[lev][d].get();
+      rhs_p[d] = predictor_rhs[lev][d].get();
     }
 
     ComputeAdvection(lev, adv_p, u_n_p); // A^n → m_advect[lev]
@@ -522,8 +555,8 @@ void INSSolver::Advance() {
       }
     }
 
-    ApplyCNDiffusion(lev, vs_p, {AMREX_D_DECL(&u_n[0], &u_n[1], &u_n[2])},
-                     {AMREX_D_DECL(adv_eff[0], adv_eff[1], adv_eff[2])});
+    BuildCNPredictorRHS(lev, rhs_p, {AMREX_D_DECL(&u_n[0], &u_n[1], &u_n[2])},
+                        {AMREX_D_DECL(adv_eff[0], adv_eff[1], adv_eff[2])});
 
     // Promote A^n to next step's A^{n-1} by swapping the buffers
     // (m_advect still holds A^n; m_advect_old holds the spent blend
@@ -532,6 +565,14 @@ void INSSolver::Advance() {
       std::swap(m_advect[lev][d], m_advect_old[lev][d]);
   }
   m_ab2_valid = true;
+
+  ApplyCompositeBNFaces(predictor_rhs, m_vstar);
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    std::array<MultiFab *, AMREX_SPACEDIM> vstar;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d)
+      vstar[d] = m_vstar[lev][d].get();
+    EnforceVelDirichlet(lev, vstar);
+  }
 
   // ---- 2) Perot modified-Poisson solve + projection on every level ----
   ProjectPerot();
@@ -542,13 +583,12 @@ void INSSolver::Advance() {
 }
 
 // ============================================================
-// FillPatch helpers.  AMReX FillPatch handles interior + C/F
-// interpolation (PhysBCFunctNoOp — the generic functor is poor for
-// staggered physical BCs); the domain-boundary ghosts are then
-// overwritten by our explicit staggered BC routines.
+// FillPatch helpers.  Face data uses PhysBCFunctNoOp followed by the
+// explicit staggered BC routine.  Cell data supplies pressure BC callbacks
+// because conservative C/F interpolation reads AMReX's coarse scratch ghosts.
 // ============================================================
 void INSSolver::FillFacePatch(int lev, int dir, Vector<FaceMFArray> &source,
-                              MultiFab &dst, Real time) {
+                              MultiFab &dst, Real time, bool homogeneous) {
   BL_PROFILE("INSSolver::FillFacePatch()");
 
   PhysBCFunctNoOp bc_func;
@@ -561,8 +601,7 @@ void INSSolver::FillFacePatch(int lev, int dir, Vector<FaceMFArray> &source,
     // BEFORE the two-level interpolation: PhysBCFunctNoOp does not
     // fill them, and fine patches that hug a wall (e.g. the lid)
     // interpolate from coarse cells that would otherwise be garbage.
-    FillVelGhostPhys(lev - 1, dir, *source[lev - 1][dir],
-                     /*homogeneous=*/false);
+    FillVelGhostPhys(lev - 1, dir, *source[lev - 1][dir], homogeneous);
     Vector<MultiFab *> cmf{source[lev - 1][dir].get()};
     Vector<MultiFab *> fmf{source[lev][dir].get()};
     Vector<Real> ct{time}, ft{time};
@@ -570,7 +609,7 @@ void INSSolver::FillFacePatch(int lev, int dir, Vector<FaceMFArray> &source,
                        geom[lev], bc_func, 0, bc_func, 0, ref_ratio[lev - 1],
                        &face_linear_interp, m_bc_vel[dir], 0);
   }
-  FillVelGhostPhys(lev, dir, dst, /*homogeneous=*/false);
+  FillVelGhostPhys(lev, dir, dst, homogeneous);
 }
 
 void INSSolver::FillCellPatch(int lev,
@@ -579,8 +618,13 @@ void INSSolver::FillCellPatch(int lev,
                               const Vector<BCRec> &bcs) {
   BL_PROFILE("INSSolver::FillCellPatch()");
 
-  PhysBCFunctNoOp bc_func;
+  auto make_bc = [this](int bc_lev) {
+    return [this, bc_lev](MultiFab &mf, int, int, const IntVect &, Real, int) {
+      FillPresGhostPhys(bc_lev, mf);
+    };
+  };
   if (lev == 0) {
+    auto bc_func = make_bc(lev);
     Vector<MultiFab *> smf{source[lev].get()};
     Vector<Real> st{time};
     FillPatchSingleLevel(dst, time, smf, st, 0, 0, 1, geom[lev], bc_func, 0);
@@ -592,16 +636,11 @@ void INSSolver::FillCellPatch(int lev,
     Vector<MultiFab *> cmf{source[lev - 1].get()};
     Vector<MultiFab *> fmf{source[lev].get()};
     Vector<Real> ct{time}, ft{time};
-    // Piecewise-constant C/F interpolation (not lincc): conservative-
-    // linear computes slopes that read the coarse scratch's
-    // domain-boundary ghosts, which FillPatchTwoLevels leaves
-    // uninitialised under PhysBCFunctNoOp → NaN for fine patches that
-    // hug a wall (the lid).  pc_interp uses no slopes, so it is
-    // immune.  The per-level pressure C/F coupling is already
-    // approximate, so the order reduction here is acceptable.
+    auto coarse_bc = make_bc(lev - 1);
+    auto fine_bc = make_bc(lev);
     FillPatchTwoLevels(dst, time, cmf, ct, fmf, ft, 0, 0, 1, geom[lev - 1],
-                       geom[lev], bc_func, 0, bc_func, 0, ref_ratio[lev - 1],
-                       &pc_interp, bcs, 0);
+                       geom[lev], coarse_bc, 0, fine_bc, 0, ref_ratio[lev - 1],
+                       &cell_cons_interp, bcs, 0);
   }
   FillPresGhostPhys(lev, dst);
 }

@@ -148,13 +148,65 @@ void INSSolver::ApplyBNFace(int lev, int dir, const MultiFab &src,
 }
 
 // ============================================================
-//  ApplyCNDiffusion — Perot predictor:  u* = B^N [(I + εL) u^n + dt A^n]
+//  ApplyCompositeBNFaces — hierarchy B^N with C/F-filled work terms
 // ============================================================
-void INSSolver::ApplyCNDiffusion(
-    int lev, const std::array<MultiFab *, AMREX_SPACEDIM> &vstar,
+void INSSolver::ApplyCompositeBNFaces(Vector<FaceMFArray> &src,
+                                      Vector<FaceMFArray> &dst) {
+  BL_PROFILE("INSSolver::ApplyCompositeBNFaces()");
+
+  const int nlev = finest_level + 1;
+  const Real eps = 0.5_rt * m_nu * m_dt;
+
+  Vector<FaceMFArray> term(nlev);
+  Vector<FaceMFArray> lap_term(nlev);
+  for (int lev = 0; lev < nlev; ++lev) {
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      const BoxArray &fba = src[lev][d]->boxArray();
+      const DistributionMapping &dm = src[lev][d]->DistributionMap();
+      term[lev][d] = std::make_unique<MultiFab>(fba, dm, 1, 1);
+      lap_term[lev][d] = std::make_unique<MultiFab>(fba, dm, 1, 0);
+      term[lev][d]->setVal(0.0);
+      MultiFab::Copy(*term[lev][d], *src[lev][d], 0, 0, 1, 0);
+      MultiFab::Copy(*dst[lev][d], *src[lev][d], 0, 0, 1, 0);
+    }
+  }
+
+  AverageDownVelocity(term);
+  AverageDownVelocity(dst);
+
+  for (int k = 1; k <= m_cn_order; ++k) {
+    for (int lev = 0; lev < nlev; ++lev) {
+      for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        const BoxArray &fba = term[lev][d]->boxArray();
+        const DistributionMapping &dm = term[lev][d]->DistributionMap();
+        MultiFab term_g(fba, dm, 1, 1);
+        FillFacePatch(lev, d, term, term_g, m_cur_time,
+                      /*homogeneous=*/true);
+        ApplyFaceLaplacian(lev, d, term_g, *lap_term[lev][d]);
+      }
+    }
+
+    for (int lev = 0; lev < nlev; ++lev) {
+      for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        MultiFab::LinComb(*term[lev][d], 0.0_rt, *term[lev][d], 0, eps,
+                          *lap_term[lev][d], 0, 0, 1, 0);
+        MultiFab::Add(*dst[lev][d], *term[lev][d], 0, 0, 1, 0);
+      }
+    }
+    AverageDownVelocity(term);
+  }
+
+  AverageDownVelocity(dst);
+}
+
+// ============================================================
+//  BuildCNPredictorRHS — (I + εL) u^n + dt A^n
+// ============================================================
+void INSSolver::BuildCNPredictorRHS(
+    int lev, const std::array<MultiFab *, AMREX_SPACEDIM> &rhs,
     const std::array<const MultiFab *, AMREX_SPACEDIM> &u_n,
     const std::array<const MultiFab *, AMREX_SPACEDIM> &adv) {
-  BL_PROFILE("INSSolver::ApplyCNDiffusion()");
+  BL_PROFILE("INSSolver::BuildCNPredictorRHS()");
 
   const Real eps = 0.5_rt * m_nu * m_dt;
 
@@ -165,7 +217,7 @@ void INSSolver::ApplyCNDiffusion(
     BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
 
     // F = (I + εL) u^n + dt A^n   (no pressure gradient — Perot)
-    MultiFab F(fba, dm, 1, 2);
+    MultiFab &F = *rhs[d];
     MultiFab::Copy(F, *u_n[d], 0, 0, 1, 2); // u_n carries 2 ghosts
 
     MultiFab LuN(fba, dm, 1, 0);
@@ -175,12 +227,5 @@ void INSSolver::ApplyCNDiffusion(
     MultiFab::Saxpy(F, m_dt, *adv[d], 0, 0, 1, 0); // F += dt A^n
 
     FillVelGhostPhys(lev, d, F, /*homogeneous=*/false);
-
-    // u* = B^N F
-    ApplyBNFace(lev, d, F, *vstar[d]);
   }
-
-  // Re-impose the prescribed wall velocity on u* (the B^N series does
-  // not preserve inhomogeneous Dirichlet data exactly).
-  EnforceVelDirichlet(lev, vstar);
 }

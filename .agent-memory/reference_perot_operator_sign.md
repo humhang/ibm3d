@@ -28,11 +28,12 @@ The projection step itself — `u^{n+1} = u* − dt B^N G p` — keeps the
 natural positive sign on `B^N G p`.  Only the *solve* uses the
 negated operator+RHS pair.
 
-This is the same sign story as AMReX `MLPoisson` (see
-`reference_mlpoisson_sign.md`), but the current code path is
-matrix-free.  Full-domain levels have the positive sign after the flip;
-partial AMR levels with C/F Dirichlet ghosts are nonsymmetric, so the
-active solver is BiCGStab rather than CG.
+AMReX `MLPoisson` itself applies `+∇²` (see
+`reference_mlpoisson_sign.md`).  The current code passes it a negated RHS
+when generating a checked initial guess for `-D B^N G`; the accepted solve
+and residual test remain matrix-free.  Full-domain levels have the positive
+sign after the flip; the composite C/F realization is nonsymmetric, so the
+active pressure solver is BiCGStab rather than CG.
 
 **How to apply**: if you ever see sign-sensitive Krylov failures on an
 operator related to ∇²,

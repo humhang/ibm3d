@@ -1,10 +1,10 @@
 ---
 name: Project — matrix-free Trilinos plan for the scalable IB solve
-description: Architectural plan for replacing the local IB GMRES prototype with a scalable Tpetra/Belos path; settled in the 2026-05-14 conversation.
+description: Architectural plan for replacing the hand-rolled IB GMRES implementation with a scalable Tpetra/Belos path; settled in the 2026-05-14 conversation.
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-The local first IB path already solves the composite AMR Taira-Colonius
+The first in-repo IB path already solves the composite AMR Taira-Colonius
 projection with hand-rolled restarted GMRES.  The scalable follow-up
 should wrap the same operator structure in Trilinos.  The target saddle-point
 structure is
@@ -18,8 +18,11 @@ structure is
 with `G,D` the discrete grad/divergence (already implemented matrix-free
 here), and `H,E` the Eulerian↔Lagrangian spread/interpolate operators
 using a discrete-delta kernel (Roma 3-pt or Peskin 4-pt).  Following
-Taira–Colonius's BN approximation, this reduces to a single SPD
-"modified Poisson" `S = Q^T B^N Q` on `λ = (p; f̃)`.
+Taira–Colonius's BN approximation, this formally reduces to a symmetric
+"modified Poisson" `S = Q^T B^N Q` on `λ = (p; f̃)` when the discrete
+spread/interpolation and divergence/gradient pairs are adjoints.  The
+current composite AMR realization is not assumed symmetric because C/F
+FillPatch interpolation and active-cell masking alter those adjoint pairs.
 
 **Decision (settled with the user on 2026-05-14)**: implement the
 future Trilinos-backed `S` **matrix-free**, *not* as an assembled
@@ -41,14 +44,18 @@ future Trilinos-backed `S` **matrix-free**, *not* as an assembled
 - Wrap `S` as a `Tpetra::Operator` subclass whose `apply(X, Y)` calls
   AMReX-side routines: spread (`H λ`) → grad (`G λ`) → polynomial in
   `L` (matrix-free face Laplacian sweeps) → divergence (`D`) →
-  interpolate (`E`).  Use Belos CG (system is SPD).
+  interpolate (`E`).  Use Belos GMRES initially.  Switch to CG only after
+  symmetry and positive definiteness have been demonstrated for the actual
+  weighted composite AMR operator, not only for the formal single-grid
+  algebra.
 - **Preconditioner**: wrap AMReX `MLMG` standard Poisson as a
   `Tpetra::Operator` and use as a left/right preconditioner.  Far from
   the IB, `S ≈ ∇²` and MLMG kills the high-frequency error; the IB
   cross-coupling rides along on the Krylov iterations.
-- Keep AMReX's `FillPatch` + `average_down_faces` + `FluxRegister`
-  machinery for the C/F interface handling.  Don't try to encode C/F
-  coupling rows in any explicit matrix.
+- Keep AMReX's `FillPatch` and face average-down machinery for C/F
+  interface handling, adding FAC/reflux synchronization only where the
+  composite discretization requires it.  Don't encode C/F coupling rows in
+  an explicit matrix.
 - Static-body single-level is a fine starting point for verification;
   the matrix-free machinery is a strict superset and works there too.
 
@@ -60,13 +67,12 @@ detail.  Treat it as the production reference; AMReX + Tpetra here is
 roughly the equivalent stack.
 
 **Current status note (2026-05-20, updated 2026-07-09)**: the first IB projection pass is
-implemented without Trilinos in `INSSolver_IB.cpp`: `IBGeometry` owns
-GPU-friendly host/device points, elements, and markers; `H/E` use a
-Peskin 4-point marker-centred finite-support kernel; `ErrorEst` tags
-marker neighborhoods; and `ProjectPerot` calls the local composite
-coupled GMRES solve with IB active only on the finest level.  The items
-below apply when replacing that local coupled solve with the planned
-Tpetra/Belos wrapper.
+implemented without Trilinos: `INSSolver_IB.cpp` owns the geometry-facing
+`H/E` kernels and marker tagging, while `INSSolver_Project.cpp` owns the
+composite hierarchy operator and hand-rolled GMRES.  IB rows and force
+columns are active only on the finest level, but pressure rows span all
+active AMR cells.  The items below apply when replacing that hand-rolled
+coupled solve with the planned Tpetra/Belos wrapper.
 
 **What to bring back into the build when implementing the Tpetra path**:
 
