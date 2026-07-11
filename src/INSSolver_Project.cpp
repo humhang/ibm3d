@@ -1,7 +1,7 @@
 /**
  * INSSolver_Project.cpp
  *
- * Perot 1997 / Taira–Colonius (without IB) projection step.
+ * Perot 1997 / Taira–Colonius projection step.
  *
  *   Modified Poisson:   (D B^N G) p^{n+1} = (1/dt) D u*
  *   Projection:         u^{n+1} = u* − dt B^N G p^{n+1}
@@ -42,6 +42,9 @@ using namespace amrex;
 
 namespace {
 
+using CellHierarchy = Vector<std::unique_ptr<MultiFab>>;
+using MaskHierarchy = Vector<std::unique_ptr<iMultiFab>>;
+
 void mask_covered_cells(MultiFab &mf, const iMultiFab &mask) {
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
@@ -57,14 +60,12 @@ void mask_covered_cells(MultiFab &mf, const iMultiFab &mask) {
   }
 }
 
-void mask_composite(Vector<std::unique_ptr<MultiFab>> &mf,
-                    const Vector<std::unique_ptr<iMultiFab>> &mask) {
+void mask_composite(CellHierarchy &mf, const MaskHierarchy &mask) {
   for (int lev = 0; lev < static_cast<int>(mf.size()); ++lev)
     mask_covered_cells(*mf[lev], *mask[lev]);
 }
 
-void define_composite_like(Vector<std::unique_ptr<MultiFab>> &dst,
-                           const Vector<std::unique_ptr<MultiFab>> &src,
+void define_composite_like(CellHierarchy &dst, const CellHierarchy &src,
                            int ngrow) {
   dst.resize(src.size());
   for (int lev = 0; lev < static_cast<int>(src.size()); ++lev) {
@@ -74,193 +75,166 @@ void define_composite_like(Vector<std::unique_ptr<MultiFab>> &dst,
   }
 }
 
-void copy_composite(Vector<std::unique_ptr<MultiFab>> &dst,
-                    const Vector<std::unique_ptr<MultiFab>> &src,
-                    const Vector<std::unique_ptr<iMultiFab>> &mask) {
+void copy_composite(CellHierarchy &dst, const CellHierarchy &src,
+                    const MaskHierarchy &mask) {
   for (int lev = 0; lev < static_cast<int>(dst.size()); ++lev)
     MultiFab::Copy(*dst[lev], *src[lev], 0, 0, 1, 0);
   mask_composite(dst, mask);
 }
 
-void copy_composite_unmasked(Vector<std::unique_ptr<MultiFab>> &dst,
-                             const Vector<std::unique_ptr<MultiFab>> &src) {
+void copy_composite_unmasked(CellHierarchy &dst, const CellHierarchy &src) {
   for (int lev = 0; lev < static_cast<int>(dst.size()); ++lev)
     MultiFab::Copy(*dst[lev], *src[lev], 0, 0, 1, 0);
 }
 
-void lincomb_composite(Vector<std::unique_ptr<MultiFab>> &dst, Real a,
-                       const Vector<std::unique_ptr<MultiFab>> &x, Real b,
-                       const Vector<std::unique_ptr<MultiFab>> &y,
-                       const Vector<std::unique_ptr<iMultiFab>> &mask) {
+void lincomb_composite(CellHierarchy &dst, Real a, const CellHierarchy &x,
+                       Real b, const CellHierarchy &y,
+                       const MaskHierarchy &mask) {
   for (int lev = 0; lev < static_cast<int>(dst.size()); ++lev) {
     MultiFab::LinComb(*dst[lev], a, *x[lev], 0, b, *y[lev], 0, 0, 1, 0);
   }
   mask_composite(dst, mask);
 }
 
-void saxpy_composite(Vector<std::unique_ptr<MultiFab>> &dst, Real a,
-                     const Vector<std::unique_ptr<MultiFab>> &x,
-                     const Vector<std::unique_ptr<iMultiFab>> &mask) {
+void saxpy_composite(CellHierarchy &dst, Real a, const CellHierarchy &x,
+                     const MaskHierarchy &mask) {
   for (int lev = 0; lev < static_cast<int>(dst.size()); ++lev)
     MultiFab::Saxpy(*dst[lev], a, *x[lev], 0, 0, 1, 0);
   mask_composite(dst, mask);
 }
 
-Real dot_composite(const Vector<std::unique_ptr<MultiFab>> &a,
-                   const Vector<std::unique_ptr<MultiFab>> &b) {
+Real dot_composite(const CellHierarchy &a, const CellHierarchy &b) {
   Real value = 0.0_rt;
   for (int lev = 0; lev < static_cast<int>(a.size()); ++lev)
     value += MultiFab::Dot(*a[lev], 0, *b[lev], 0, 1, 0);
   return value;
 }
 
-Real vector_dot_project(const std::vector<Real> &a,
-                        const std::vector<Real> &b) {
+Real dot_vector(const std::vector<Real> &a, const std::vector<Real> &b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), Real(0.0));
 }
 
-void vector_saxpy_project(std::vector<Real> &dst, Real a,
-                          const std::vector<Real> &x) {
+void saxpy_vector(std::vector<Real> &dst, Real a, const std::vector<Real> &x) {
   for (std::size_t i = 0; i < dst.size(); ++i)
     dst[i] += a * x[i];
 }
 
-void vector_lincomb_project(std::vector<Real> &dst, Real a,
-                            const std::vector<Real> &x, Real b,
-                            const std::vector<Real> &y) {
+void lincomb_vector(std::vector<Real> &dst, Real a, const std::vector<Real> &x,
+                    Real b, const std::vector<Real> &y) {
   for (std::size_t i = 0; i < dst.size(); ++i)
     dst[i] = a * x[i] + b * y[i];
 }
 
-Real dot_coupled_composite(const Vector<std::unique_ptr<MultiFab>> &a_p,
-                           const std::vector<Real> &a_ib,
-                           const Vector<std::unique_ptr<MultiFab>> &b_p,
-                           const std::vector<Real> &b_ib) {
-  return dot_composite(a_p, b_p) + vector_dot_project(a_ib, b_ib);
+Real dot_coupled(const CellHierarchy &a_p, const std::vector<Real> &a_ib,
+                 const CellHierarchy &b_p, const std::vector<Real> &b_ib) {
+  return dot_composite(a_p, b_p) + dot_vector(a_ib, b_ib);
 }
 
-Real norm2_vector_project(const std::vector<Real> &a) {
-  return vector_dot_project(a, a);
-}
+Real norm2_vector(const std::vector<Real> &a) { return dot_vector(a, a); }
 
 struct CoupledResidual {
   Real pressure_norm2;
   Real ib_norm2;
 
+  [[nodiscard]] Real norm2() const { return pressure_norm2 + ib_norm2; }
+
   [[nodiscard]] Real norm() const {
-    return std::sqrt(std::max(pressure_norm2 + ib_norm2, Real(0.0)));
+    return std::sqrt(std::max(norm2(), Real(0.0)));
   }
 };
 
-template <typename ApplyOperator>
-int solve_vector_bicgstab(std::vector<Real> &solution,
-                          const std::vector<Real> &rhs, Real rel_tol,
-                          int max_iter, Real tiny,
-                          ApplyOperator &&apply_operator) {
-  std::vector<Real> Ax(rhs.size(), 0.0_rt);
-  std::vector<Real> rr(rhs.size(), 0.0_rt);
-  std::vector<Real> rhat(rhs.size(), 0.0_rt);
-  std::vector<Real> pv(rhs.size(), 0.0_rt);
-  std::vector<Real> vv(rhs.size(), 0.0_rt);
-  std::vector<Real> ss(rhs.size(), 0.0_rt);
-  std::vector<Real> tt(rhs.size(), 0.0_rt);
-
-  apply_operator(solution, Ax);
-  for (std::size_t i = 0; i < rr.size(); ++i)
-    rr[i] = rhs[i] - Ax[i];
-  rhat = rr;
-
-  const Real rhs_norm2 = std::max(norm2_vector_project(rhs), Real(1.0e-300));
-  const Real tol2 = rel_tol * rel_tol * rhs_norm2;
-  Real residual_norm2 = norm2_vector_project(rr);
-
-  Real rho = 1.0_rt;
-  Real alpha = 1.0_rt;
-  Real omega = 1.0_rt;
-  int iter = 0;
-  for (; iter < max_iter; ++iter) {
-    if (residual_norm2 < tol2 || !std::isfinite(residual_norm2))
-      break;
-
-    const Real rho_new = vector_dot_project(rhat, rr);
-    if (std::abs(rho_new) < tiny)
-      break;
-    const Real beta = (rho_new / rho) * (alpha / omega);
-
-    vector_lincomb_project(pv, 1.0_rt, pv, -omega, vv);
-    vector_lincomb_project(pv, beta, pv, 1.0_rt, rr);
-
-    apply_operator(pv, vv);
-    const Real rhatv = vector_dot_project(rhat, vv);
-    if (std::abs(rhatv) < tiny)
-      break;
-    alpha = rho_new / rhatv;
-
-    vector_lincomb_project(ss, 1.0_rt, rr, -alpha, vv);
-    const Real s2 = norm2_vector_project(ss);
-    if (s2 < tol2) {
-      vector_saxpy_project(solution, alpha, pv);
-      residual_norm2 = s2;
-      ++iter;
-      break;
+// H already contains marker quadrature.  This scaling equilibrates all four
+// uniform-grid blocks at O(1/h) and recovers their adjoint scaling.
+struct CoupledScaling {
+  CoupledScaling(const Vector<Geometry> &geometry, int finest_level,
+                 const std::vector<ibm3d::IBMarker> &markers)
+      : pressure_rows(finest_level + 1),
+        force_columns(markers.size() * AMREX_SPACEDIM) {
+    Real finest_cell_volume = 1.0_rt;
+    for (int lev = 0; lev <= finest_level; ++lev) {
+      const auto dx = geometry[lev].CellSizeArray();
+      Real cell_volume = 1.0_rt;
+      for (int d = 0; d < AMREX_SPACEDIM; ++d)
+        cell_volume *= dx[d];
+      pressure_rows[lev] =
+          std::pow(cell_volume, 1.0_rt / static_cast<Real>(AMREX_SPACEDIM));
+      if (lev == finest_level)
+        finest_cell_volume = cell_volume;
     }
 
-    apply_operator(ss, tt);
-    const Real t2 = norm2_vector_project(tt);
-    if (t2 <= tiny)
-      break;
-    omega = vector_dot_project(tt, ss) / t2;
-
-    vector_saxpy_project(solution, alpha, pv);
-    vector_saxpy_project(solution, omega, ss);
-
-    vector_lincomb_project(rr, 1.0_rt, ss, -omega, tt);
-    rho = rho_new;
-    residual_norm2 = norm2_vector_project(rr);
-    if (std::abs(omega) < tiny)
-      break;
+    const Real marker_measure =
+        finest_cell_volume / pressure_rows[finest_level];
+    for (std::size_t marker = 0; marker < markers.size(); ++marker) {
+      const Real scale = marker_measure / markers[marker].weight;
+      for (int d = 0; d < AMREX_SPACEDIM; ++d)
+        force_columns[marker * AMREX_SPACEDIM + d] = scale;
+    }
   }
-  return iter;
-}
 
-void saxpy_coupled_composite(Vector<std::unique_ptr<MultiFab>> &dst_p,
-                             std::vector<Real> &dst_ib, Real a,
-                             const Vector<std::unique_ptr<MultiFab>> &x_p,
-                             const std::vector<Real> &x_ib,
-                             const Vector<std::unique_ptr<iMultiFab>> &mask) {
+  void scale_pressure(CellHierarchy &values) const {
+    AMREX_ALWAYS_ASSERT(values.size() == pressure_rows.size());
+    for (int lev = 0; lev < static_cast<int>(values.size()); ++lev)
+      values[lev]->mult(pressure_rows[lev], 0, 1, 0);
+  }
+
+  void unscale_pressure(CellHierarchy &values) const {
+    AMREX_ALWAYS_ASSERT(values.size() == pressure_rows.size());
+    for (int lev = 0; lev < static_cast<int>(values.size()); ++lev)
+      values[lev]->mult(1.0_rt / pressure_rows[lev], 0, 1, 0);
+  }
+
+  void to_scaled_force(const std::vector<Real> &physical,
+                       std::vector<Real> &scaled) const {
+    AMREX_ALWAYS_ASSERT(physical.size() == force_columns.size());
+    scaled.resize(physical.size());
+    for (std::size_t i = 0; i < physical.size(); ++i)
+      scaled[i] = physical[i] / force_columns[i];
+  }
+
+  void to_physical_force(const std::vector<Real> &scaled,
+                         std::vector<Real> &physical) const {
+    AMREX_ALWAYS_ASSERT(scaled.size() == force_columns.size());
+    physical.resize(scaled.size());
+    for (std::size_t i = 0; i < scaled.size(); ++i)
+      physical[i] = force_columns[i] * scaled[i];
+  }
+
+  Vector<Real> pressure_rows;
+  std::vector<Real> force_columns;
+};
+
+void saxpy_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
+                   const CellHierarchy &x_p, const std::vector<Real> &x_ib,
+                   const MaskHierarchy &mask) {
   saxpy_composite(dst_p, a, x_p, mask);
-  vector_saxpy_project(dst_ib, a, x_ib);
+  saxpy_vector(dst_ib, a, x_ib);
 }
 
-void lincomb_coupled_composite(Vector<std::unique_ptr<MultiFab>> &dst_p,
-                               std::vector<Real> &dst_ib, Real a,
-                               const Vector<std::unique_ptr<MultiFab>> &x_p,
-                               const std::vector<Real> &x_ib, Real b,
-                               const Vector<std::unique_ptr<MultiFab>> &y_p,
-                               const std::vector<Real> &y_ib,
-                               const Vector<std::unique_ptr<iMultiFab>> &mask) {
+void lincomb_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
+                     const CellHierarchy &x_p, const std::vector<Real> &x_ib,
+                     Real b, const CellHierarchy &y_p,
+                     const std::vector<Real> &y_ib, const MaskHierarchy &mask) {
   lincomb_composite(dst_p, a, x_p, b, y_p, mask);
-  vector_lincomb_project(dst_ib, a, x_ib, b, y_ib);
+  lincomb_vector(dst_ib, a, x_ib, b, y_ib);
 }
 
-Real sum_composite(const Vector<std::unique_ptr<MultiFab>> &a) {
+Real sum_composite(const CellHierarchy &a) {
   Real value = 0.0_rt;
   for (const auto &mf : a)
-    value += mf->sum(0);
+    value += mf->sum(0, true);
+  ParallelDescriptor::ReduceRealSum(value);
   return value;
 }
 
-Real active_cell_count(const Vector<std::unique_ptr<iMultiFab>> &mask) {
-  Real value = 0.0_rt;
-  for (const auto &m : mask) {
-    MultiFab mf = amrex::ToMultiFab(*m);
-    value += mf.sum(0);
-  }
-  return value;
+Real active_cell_count(const MaskHierarchy &mask) {
+  Long value = 0;
+  for (const auto &m : mask)
+    value += m->sum(0, 0, true);
+  ParallelDescriptor::ReduceLongSum(value);
+  return static_cast<Real>(value);
 }
 
-void subtract_composite_mean(Vector<std::unique_ptr<MultiFab>> &mf,
-                             const Vector<std::unique_ptr<iMultiFab>> &mask) {
+void subtract_composite_mean(CellHierarchy &mf, const MaskHierarchy &mask) {
   const Real n = active_cell_count(mask);
   if (n <= 0.0_rt)
     return;
@@ -305,262 +279,35 @@ void negative_divergence_from_faces(
 
 } // namespace
 
-// ============================================================
-//  ApplyModifiedPoissonOp — result = −D B^N G φ   (cell → cell)
-//
-//  We return the negated operator so the full-domain periodic/Neumann
-//  case has the standard positive sign.  C/F Dirichlet ghosts make the
-//  per-level AMR operator nonsymmetric, so SolveModifiedPoisson uses
-//  BiCGStab rather than CG.  The caller passes a negated RHS to
-//  compensate.  The projection step still uses B^N G p with its
-//  natural sign.
-//
-//  φ must have ≥ 1 ghost cell filled by the caller.
-// ============================================================
-void INSSolver::ApplyModifiedPoissonOp(int lev, const MultiFab &phi,
-                                       MultiFab &result) {
-  BL_PROFILE("INSSolver::ApplyModifiedPoissonOp()");
+MaskHierarchy INSSolver::BuildCompositeActiveMasks() const {
+  BL_PROFILE("INSSolver::BuildCompositeActiveMasks()");
 
-  const BoxArray &ba = grids[lev];
-  const DistributionMapping &dm = dmap[lev];
-
-  // Compute G φ on faces, then apply B^N face-by-face.
-  std::array<MultiFab, AMREX_SPACEDIM> bgphi;
-  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-    BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
-    MultiFab gphi(fba, dm, 1, 2); // 2 ghosts for B^N's L applications
-    bgphi[d].define(fba, dm, 1, 0);
-
-    // Zero everything first so that coarse–fine ghost cells (which the
-    // per-level operator never fills) are a deterministic 0 — the
-    // per-level "Dirichlet-0 at C/F" approximation.  Without this they
-    // are uninitialised and the operator blows up whenever a fine
-    // patch has an interior C/F interface (e.g. the lid cavity).
-    gphi.setVal(0.0);
-    ComputePressureGradient(lev, d, phi, gphi);
-
-    ApplyBNFace(lev, d, gphi, bgphi[d]);
+  const int nlev = finest_level + 1;
+  MaskHierarchy active_masks(nlev);
+  for (int lev = 0; lev < finest_level; ++lev) {
+    active_masks[lev] = std::make_unique<iMultiFab>(amrex::makeFineMask(
+        grids[lev], dmap[lev], grids[lev + 1], ref_ratio[lev], 1, 0));
   }
-
-  // result = D (B^N G φ)
-  const Real *dx = geom[lev].CellSize();
-  const Real cx = 1.0_rt / dx[0];
-  const Real cy = 1.0_rt / dx[1];
-#if AMREX_SPACEDIM == 3
-  const Real cz = 1.0_rt / dx[2];
-#endif
-
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-  for (MFIter mfi(result, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-    const Box &bx = mfi.tilebox();
-    auto const &u = bgphi[0].const_array(mfi);
-    auto const &v = bgphi[1].const_array(mfi);
-#if AMREX_SPACEDIM == 3
-    auto const &w = bgphi[2].const_array(mfi);
-#endif
-    auto const &r = result.array(mfi);
-    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      Real d = cx * (u(i + 1, j, k) - u(i, j, k)) +
-               cy * (v(i, j + 1, k) - v(i, j, k));
-#if AMREX_SPACEDIM == 3
-      d += cz * (w(i, j, k + 1) - w(i, j, k));
-#endif
-      r(i, j, k) = -d; // negate so the operator is positive semidefinite
-    });
-  }
-}
-
-// ============================================================
-//  SubtractMean — for the singular periodic system: pin Σ φ ≡ 0
-// ============================================================
-void INSSolver::SubtractMean(int lev, MultiFab &mf) {
-  const Real n_cells = static_cast<Real>(grids[lev].numPts());
-  Real s = mf.sum(0);
-  s /= n_cells;
-  mf.plus(-s, 0, 1, 0);
-}
-
-// ============================================================
-//  SolveModifiedPoisson — matrix-free BiCGStab on (D B^N G) p = rhs
-//
-//  p:   in = warm start, out = solution (cell-centred, ≥1 ghost)
-//  rhs: read-only cell-centred MF (0 ghosts is fine)
-// ============================================================
-int INSSolver::SolveModifiedPoisson(int lev, MultiFab &p,
-                                    const MultiFab &rhs_in) {
-  BL_PROFILE("INSSolver::SolveModifiedPoisson()");
-
-  const BoxArray &ba = grids[lev];
-  const DistributionMapping &dm = dmap[lev];
-
-  // A level's pressure problem is singular (solution defined up to a
-  // constant) only when it is pure Neumann/periodic — i.e. no outflow
-  // (m_pressure_singular) AND the level tiles the whole (refined)
-  // domain so there is no coarse–fine interface supplying Dirichlet
-  // data.  A partial fine patch gets Dirichlet-from-coarse at its C/F
-  // boundary and is non-singular: pinning its mean would corrupt it.
-  const bool level_singular =
-      m_pressure_singular &&
-      (grids[lev].numPts() == geom[lev].Domain().numPts());
-
-  MultiFab rhs(ba, dm, 1, 0);
-  MultiFab::Copy(rhs, rhs_in, 0, 0, 1, 0);
-  if (level_singular) {
-    SubtractMean(lev, rhs);
-    SubtractMean(lev, p);
-  }
-
-  // Boundary data for p: domain physical BCs AND, at the C/F
-  // interface, the already-solved coarser pressure interpolated in
-  // (Dirichlet-from-coarse level solve — IAMR style).  Separate ghost
-  // buffer (FillCellPatch's FillPatchTwoLevels must not alias the fine
-  // source).  p_g.valid = this level's p, p_g C/F = coarse-interp.
-  MultiFab p_g(ba, dm, 1, 1);
-  FillCellPatch(lev, m_pressure, p_g, m_cur_time, m_bc_pres);
-
-  // ---- Matrix-free BiCGStab ----
-  // The per-level operator −D B^N G is NOT symmetric once a fine patch
-  // has a coarse–fine interface (the staggered B^N + ad-hoc C/F ghost
-  // breaks the D/G adjointness).  CG diverges on it; BiCGStab tolerates
-  // the asymmetry.  All search vectors are *corrections*: homogeneous
-  // at C/F (ghost = 0 via setVal, never refilled there) — only
-  // FillPresGhostPhys touches their domain ghosts before each apply.
-  MultiFab rr(ba, dm, 1, 0), rhat(ba, dm, 1, 0);
-  MultiFab pv(ba, dm, 1, 1), v(ba, dm, 1, 0);
-  MultiFab s(ba, dm, 1, 1), t(ba, dm, 1, 0);
-  MultiFab Ax(ba, dm, 1, 0);
-  pv.setVal(0.0);
-  s.setVal(0.0);
-
-  // r0 = rhs − A p_g
-  ApplyModifiedPoissonOp(lev, p_g, Ax);
-  MultiFab::LinComb(rr, 1.0_rt, rhs, 0, -1.0_rt, Ax, 0, 0, 1, 0);
-  MultiFab::Copy(rhat, rr, 0, 0, 1, 0);
-
-  const Real rhs_norm2 = MultiFab::Dot(rhs, 0, rhs, 0, 1, 0);
-  const Real tol2 =
-      m_poisson_tol * m_poisson_tol * std::max(rhs_norm2, Real(1.0e-300));
-
-  Real rho = 1.0, alpha = 1.0, omega = 1.0;
-  v.setVal(0.0);
-  Real rsold = MultiFab::Dot(rr, 0, rr, 0, 1, 0);
-
-  const Real tiny = 1.0e-300;
-  const char *breakdown = nullptr;
-  int iter = 0;
-  for (; iter < m_poisson_max_iter; ++iter) {
-    if (rsold < tol2)
-      break;
-    if (!std::isfinite(rsold)) {
-      breakdown = "non-finite residual";
-      break;
-    }
-
-    const Real rho_new = MultiFab::Dot(rhat, 0, rr, 0, 1, 0);
-    if (std::abs(rho_new) < tiny) {
-      breakdown = "rho breakdown";
-      break;
-    }
-    const Real beta = (rho_new / rho) * (alpha / omega);
-
-    // pv ← rr + beta (pv − omega v)
-    MultiFab::LinComb(pv, 1.0_rt, pv, 0, -omega, v, 0, 0, 1, 0);
-    MultiFab::LinComb(pv, beta, pv, 0, 1.0_rt, rr, 0, 0, 1, 0);
-
-    FillPresGhostPhys(lev, pv);
-    ApplyModifiedPoissonOp(lev, pv, v);
-
-    const Real rhatv = MultiFab::Dot(rhat, 0, v, 0, 1, 0);
-    if (std::abs(rhatv) < tiny) {
-      breakdown = "rhat-v breakdown";
-      break;
-    }
-    alpha = rho_new / rhatv;
-
-    // s ← rr − alpha v
-    MultiFab::LinComb(s, 1.0_rt, rr, 0, -alpha, v, 0, 0, 1, 0);
-
-    const Real s2 = MultiFab::Dot(s, 0, s, 0, 1, 0);
-    if (s2 < tol2) {
-      MultiFab::Saxpy(p, alpha, pv, 0, 0, 1, 0);
-      rsold = s2;
-      ++iter;
-      break;
-    }
-
-    FillPresGhostPhys(lev, s);
-    ApplyModifiedPoissonOp(lev, s, t);
-
-    const Real tt = MultiFab::Dot(t, 0, t, 0, 1, 0);
-    omega = (tt > tiny) ? MultiFab::Dot(t, 0, s, 0, 1, 0) / tt : 0.0;
-
-    // p ← p + alpha pv + omega s
-    MultiFab::Saxpy(p, alpha, pv, 0, 0, 1, 0);
-    MultiFab::Saxpy(p, omega, s, 0, 0, 1, 0);
-
-    // rr ← s − omega t
-    MultiFab::LinComb(rr, 1.0_rt, s, 0, -omega, t, 0, 0, 1, 0);
-
-    rho = rho_new;
-    rsold = MultiFab::Dot(rr, 0, rr, 0, 1, 0);
-    if (std::abs(omega) < tiny) {
-      breakdown = "omega breakdown";
-      break;
-    }
-  }
-
-  // Re-pin the mean of the solution (truly-singular level only).
-  if (level_singular)
-    SubtractMean(lev, p);
-
-  const bool converged = std::isfinite(rsold) && rsold < tol2;
-  if (!converged) {
-    const Real relres = std::sqrt(std::max(rsold, Real(0.0)) /
-                                  std::max(rhs_norm2, Real(1.0e-300)));
-    std::ostringstream msg;
-    msg << "Modified Poisson solve on level " << lev;
-    if (breakdown != nullptr) {
-      msg << " stopped by " << breakdown;
-    } else if (iter >= m_poisson_max_iter) {
-      msg << " reached max_iter";
-    } else {
-      msg << " failed to converge";
-    }
-    msg << "; the pressure system may be singular, inconsistent, or "
-           "ill-conditioned"
-        << " (level_singular = " << level_singular
-        << ", cells = " << grids[lev].numPts() << ", iter = " << iter
-        << ", relres = " << relres << ").";
-    amrex::Warning(msg.str());
-  }
-
-  if (m_verbose > 1) {
-    const Real relres = std::sqrt(std::max(rsold, Real(0.0)) /
-                                  std::max(rhs_norm2, Real(1.0e-300)));
-    Print() << "  Perot BiCGStab lev " << lev << ": " << iter
-            << " iters, |r|/|rhs| = " << relres << "\n";
-  }
-  return iter;
+  active_masks[finest_level] = std::make_unique<iMultiFab>(
+      grids[finest_level], dmap[finest_level], 1, 0);
+  active_masks[finest_level]->setVal(1);
+  return active_masks;
 }
 
 void INSSolver::ApplyCompositeModifiedPoissonOp(
-    Vector<std::unique_ptr<MultiFab>> &phi,
-    Vector<std::unique_ptr<MultiFab>> &result,
-    const Vector<std::unique_ptr<iMultiFab>> &active_masks) {
+    CellHierarchy &phi, CellHierarchy &result,
+    const MaskHierarchy &active_masks) {
   BL_PROFILE("INSSolver::ApplyCompositeModifiedPoissonOp()");
 
   ApplyCompositeProjectionBlocks(phi, nullptr, result, nullptr, active_masks);
 }
 
 void INSSolver::ApplyCompositeProjectionBlocks(
-    Vector<std::unique_ptr<MultiFab>> &phi, const std::vector<Real> *force,
-    Vector<std::unique_ptr<MultiFab>> &result_p, std::vector<Real> *result_ib,
-    const Vector<std::unique_ptr<iMultiFab>> &active_masks) {
-  AMREX_ASSERT((force == nullptr) == (result_ib == nullptr));
+    CellHierarchy &phi, const std::vector<Real> *force, CellHierarchy &result_p,
+    std::vector<Real> *result_ib, const MaskHierarchy &active_masks) {
+  AMREX_ASSERT(result_ib == nullptr || force != nullptr);
 
-  Vector<std::unique_ptr<MultiFab>> phi_sync;
+  CellHierarchy phi_sync;
   define_composite_like(phi_sync, phi, 1);
   copy_composite_unmasked(phi_sync, phi);
   for (int lev = finest_level - 1; lev >= 0; --lev)
@@ -609,21 +356,19 @@ void INSSolver::ApplyCompositeProjectionBlocks(
   }
 }
 
-void INSSolver::ApplyCompositeIBSchurOp(
-    Vector<std::unique_ptr<MultiFab>> &phi, const std::vector<Real> &force,
-    Vector<std::unique_ptr<MultiFab>> &result_p, std::vector<Real> &result_ib,
-    const Vector<std::unique_ptr<iMultiFab>> &active_masks) {
-  BL_PROFILE("INSSolver::ApplyCompositeIBSchurOp()");
+void INSSolver::ApplyCompositeIBProjectionOp(
+    CellHierarchy &phi, const std::vector<Real> &force, CellHierarchy &result_p,
+    std::vector<Real> &result_ib, const MaskHierarchy &active_masks) {
+  BL_PROFILE("INSSolver::ApplyCompositeIBProjectionOp()");
 
   ApplyCompositeProjectionBlocks(phi, &force, result_p, &result_ib,
                                  active_masks);
 }
 
-void INSSolver::ApplyCompositePoissonPreconditioner(
-    Vector<std::unique_ptr<MultiFab>> &p,
-    const Vector<std::unique_ptr<MultiFab>> &rhs,
-    const Vector<std::unique_ptr<iMultiFab>> &active_masks) {
-  BL_PROFILE("INSSolver::ApplyCompositePoissonPreconditioner()");
+void INSSolver::BuildCompositePoissonInitialGuess(
+    CellHierarchy &p, const CellHierarchy &rhs,
+    const MaskHierarchy &active_masks) {
+  BL_PROFILE("INSSolver::BuildCompositePoissonInitialGuess()");
 
   const int nlev = finest_level + 1;
   Vector<Geometry> mg_geom(geom.begin(), geom.begin() + nlev);
@@ -649,7 +394,7 @@ void INSSolver::ApplyCompositePoissonPreconditioner(
   for (int lev = 0; lev < nlev; ++lev)
     poisson.setLevelBC(lev, nullptr);
 
-  Vector<std::unique_ptr<MultiFab>> neg_rhs;
+  CellHierarchy neg_rhs;
   define_composite_like(neg_rhs, rhs, 0);
   Vector<MultiFab *> sol(nlev);
   Vector<const MultiFab *> rhs_ptr(nlev);
@@ -673,12 +418,11 @@ void INSSolver::ApplyCompositePoissonPreconditioner(
 }
 
 int INSSolver::SolveCompositeModifiedPoisson(
-    Vector<std::unique_ptr<MultiFab>> &p,
-    const Vector<std::unique_ptr<MultiFab>> &rhs_in,
-    const Vector<std::unique_ptr<iMultiFab>> &active_masks) {
+    CellHierarchy &p, const CellHierarchy &rhs_in,
+    const MaskHierarchy &active_masks) {
   BL_PROFILE("INSSolver::SolveCompositeModifiedPoisson()");
 
-  Vector<std::unique_ptr<MultiFab>> rhs;
+  CellHierarchy rhs;
   define_composite_like(rhs, rhs_in, 0);
   copy_composite(rhs, rhs_in, active_masks);
   mask_composite(p, active_masks);
@@ -688,7 +432,7 @@ int INSSolver::SolveCompositeModifiedPoisson(
     subtract_composite_mean(p, active_masks);
   }
 
-  Vector<std::unique_ptr<MultiFab>> rr, rhat, pv, v, s, t, Ax;
+  CellHierarchy rr, rhat, pv, v, s, t, Ax;
   define_composite_like(rr, p, 0);
   define_composite_like(rhat, p, 0);
   define_composite_like(pv, p, 1);
@@ -702,7 +446,7 @@ int INSSolver::SolveCompositeModifiedPoisson(
       m_poisson_tol * m_poisson_tol * std::max(rhs_norm2, Real(1.0e-300));
 
   if (!m_pressure_singular) {
-    Vector<std::unique_ptr<MultiFab>> saved_p;
+    CellHierarchy saved_p;
     define_composite_like(saved_p, p, 1);
     copy_composite_unmasked(saved_p, p);
 
@@ -710,7 +454,7 @@ int INSSolver::SolveCompositeModifiedPoisson(
     lincomb_composite(rr, 1.0_rt, rhs, -1.0_rt, Ax, active_masks);
     const Real cold_resid2 = dot_composite(rr, rr);
 
-    ApplyCompositePoissonPreconditioner(p, rhs, active_masks);
+    BuildCompositePoissonInitialGuess(p, rhs, active_masks);
     ApplyCompositeModifiedPoissonOp(p, Ax, active_masks);
     lincomb_composite(rr, 1.0_rt, rhs, -1.0_rt, Ax, active_masks);
     const Real warm_resid2 = dot_composite(rr, rr);
@@ -845,14 +589,13 @@ int INSSolver::SolveCompositeModifiedPoisson(
   return iter;
 }
 
-int INSSolver::SolveCompositeIBProjection(
-    Vector<std::unique_ptr<MultiFab>> &p,
-    const Vector<std::unique_ptr<MultiFab>> &rhs_p_in,
-    const std::vector<Real> &rhs_ib,
-    const Vector<std::unique_ptr<iMultiFab>> &active_masks) {
+int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
+                                          const CellHierarchy &rhs_p_in,
+                                          const std::vector<Real> &rhs_ib,
+                                          const MaskHierarchy &active_masks) {
   BL_PROFILE("INSSolver::SolveCompositeIBProjection()");
 
-  Vector<std::unique_ptr<MultiFab>> rhs_p;
+  CellHierarchy rhs_p;
   define_composite_like(rhs_p, rhs_p_in, 0);
   copy_composite(rhs_p, rhs_p_in, active_masks);
   mask_composite(p, active_masks);
@@ -862,99 +605,89 @@ int INSSolver::SolveCompositeIBProjection(
     subtract_composite_mean(p, active_masks);
   }
 
+  AMREX_ALWAYS_ASSERT(rhs_ib.size() ==
+                      m_ib_geometry.markers.size() * AMREX_SPACEDIM);
+  AMREX_ALWAYS_ASSERT(m_ib_force.size() == rhs_ib.size());
+  const CoupledScaling scaling(geom, finest_level, m_ib_geometry.markers);
+  std::vector<Real> scaled_force;
+  std::vector<Real> physical_force;
+  scaling.to_scaled_force(m_ib_force, scaled_force);
+
+  CellHierarchy scaled_rhs_p;
+  define_composite_like(scaled_rhs_p, rhs_p, 0);
+  copy_composite(scaled_rhs_p, rhs_p, active_masks);
+  scaling.scale_pressure(scaled_rhs_p);
+
   const Real rhs_p_norm2 = dot_composite(rhs_p, rhs_p);
-  const Real rhs_ib_norm2 = vector_dot_project(rhs_ib, rhs_ib);
-  const Real rhs_norm2 = rhs_p_norm2 + rhs_ib_norm2;
+  const Real rhs_ib_norm2 = dot_vector(rhs_ib, rhs_ib);
+  const Real rhs_norm2 =
+      dot_composite(scaled_rhs_p, scaled_rhs_p) + rhs_ib_norm2;
   const Real rhs_norm = std::sqrt(std::max(rhs_norm2, Real(1.0e-300)));
   const Real tol = m_poisson_tol * rhs_norm;
   const Real tiny = 1.0e-300;
   const Real tol2 =
       m_poisson_tol * m_poisson_tol * std::max(rhs_norm2, Real(1.0e-300));
 
-  Vector<std::unique_ptr<MultiFab>> Ax_p, rr_p;
+  CellHierarchy Ax_p, rr_p;
   define_composite_like(Ax_p, p, 0);
   define_composite_like(rr_p, p, 1);
   std::vector<Real> Ax_ib(rhs_ib.size(), 0.0_rt);
   std::vector<Real> rr_ib(rhs_ib.size(), 0.0_rt);
 
+  const auto apply_scaled_operator =
+      [&](CellHierarchy &input_p, const std::vector<Real> &input_force,
+          CellHierarchy &result_p, std::vector<Real> &result_ib) {
+        scaling.to_physical_force(input_force, physical_force);
+        ApplyCompositeIBProjectionOp(input_p, physical_force, result_p,
+                                     result_ib, active_masks);
+        scaling.scale_pressure(result_p);
+      };
+
   const auto evaluate_residual = [&]() {
-    ApplyCompositeIBSchurOp(p, m_ib_force, Ax_p, Ax_ib, active_masks);
-    lincomb_composite(rr_p, 1.0_rt, rhs_p, -1.0_rt, Ax_p, active_masks);
+    apply_scaled_operator(p, scaled_force, Ax_p, Ax_ib);
+    lincomb_composite(rr_p, 1.0_rt, scaled_rhs_p, -1.0_rt, Ax_p, active_masks);
     for (std::size_t i = 0; i < rr_ib.size(); ++i)
       rr_ib[i] = rhs_ib[i] - Ax_ib[i];
-    return CoupledResidual{dot_composite(rr_p, rr_p),
-                           norm2_vector_project(rr_ib)};
+    return CoupledResidual{dot_composite(rr_p, rr_p), norm2_vector(rr_ib)};
   };
 
   Real resid = evaluate_residual().norm();
 
-  Vector<std::unique_ptr<MultiFab>> best_p;
+  CellHierarchy best_p;
   define_composite_like(best_p, p, 1);
   copy_composite_unmasked(best_p, p);
-  std::vector<Real> best_ib = m_ib_force;
+  std::vector<Real> best_ib = scaled_force;
   Real best_resid = resid;
 
   const auto remember_current_if_better = [&](Real candidate_resid) {
     if (!std::isfinite(candidate_resid) || candidate_resid >= best_resid)
       return false;
     copy_composite_unmasked(best_p, p);
-    best_ib = m_ib_force;
+    best_ib = scaled_force;
     best_resid = candidate_resid;
     return true;
   };
 
   if (!m_pressure_singular) {
-    Vector<std::unique_ptr<MultiFab>> saved_p, zero_p, force_p, precond_rhs;
+    CellHierarchy saved_p, zero_p, force_p, guess_rhs;
     define_composite_like(saved_p, p, 1);
     define_composite_like(zero_p, p, 1);
     define_composite_like(force_p, p, 0);
-    define_composite_like(precond_rhs, rhs_p, 0);
+    define_composite_like(guess_rhs, rhs_p, 0);
     copy_composite_unmasked(saved_p, p);
 
-    std::vector<Real> force_ib(rhs_ib.size(), 0.0_rt);
-    ApplyCompositeIBSchurOp(zero_p, m_ib_force, force_p, force_ib,
-                            active_masks);
-    lincomb_composite(precond_rhs, 1.0_rt, rhs_p, -1.0_rt, force_p,
-                      active_masks);
-    ApplyCompositePoissonPreconditioner(p, precond_rhs, active_masks);
+    scaling.to_physical_force(scaled_force, physical_force);
+    ApplyCompositeProjectionBlocks(zero_p, &physical_force, force_p, nullptr,
+                                   active_masks);
+    lincomb_composite(guess_rhs, 1.0_rt, rhs_p, -1.0_rt, force_p, active_masks);
+    BuildCompositePoissonInitialGuess(p, guess_rhs, active_masks);
 
     const Real warm_resid = evaluate_residual().norm();
-    if (remember_current_if_better(warm_resid)) {
-      resid = warm_resid;
-    } else {
+    if (!remember_current_if_better(warm_resid))
       copy_composite_unmasked(p, saved_p);
-      evaluate_residual();
-    }
   }
 
-  if (m_pressure_singular) {
-    Vector<std::unique_ptr<MultiFab>> cold_p;
-    define_composite_like(cold_p, p, 1);
-    copy_composite_unmasked(cold_p, p);
-    const std::vector<Real> cold_force = m_ib_force;
-    const Real cold_resid = resid;
-
-    const int saved_verbose = m_verbose;
-    m_verbose = 0;
-    for (int lev = 0; lev < finest_level; ++lev)
-      SolveModifiedPoisson(lev, *p[lev], *rhs_p[lev]);
-    SolveIBProjection(finest_level, *p[finest_level], *rhs_p[finest_level],
-                      rhs_ib);
-    m_verbose = saved_verbose;
-    AverageDownPressure();
-
-    resid = evaluate_residual().norm();
-
-    if (!remember_current_if_better(resid)) {
-      copy_composite_unmasked(p, cold_p);
-      m_ib_force = cold_force;
-      resid = cold_resid;
-      evaluate_residual();
-    }
-  }
-
-  Vector<std::unique_ptr<MultiFab>> rhat_p, search_p, image_p, intermediate_p,
-      image_intermediate_p;
+  CellHierarchy rhat_p, search_p, image_p, intermediate_p, image_intermediate_p;
   define_composite_like(rhat_p, p, 0);
   define_composite_like(search_p, p, 1);
   define_composite_like(image_p, p, 0);
@@ -971,8 +704,7 @@ int INSSolver::SolveCompositeIBProjection(
   int iter = 0;
   while (iter < m_poisson_max_iter) {
     const CoupledResidual exact_residual = evaluate_residual();
-    const Real exact_resid2 =
-        exact_residual.pressure_norm2 + exact_residual.ib_norm2;
+    const Real exact_resid2 = exact_residual.norm2();
     resid = exact_residual.norm();
     remember_current_if_better(resid);
     if (!std::isfinite(exact_resid2)) {
@@ -998,7 +730,7 @@ int INSSolver::SolveCompositeIBProjection(
     bool cycle_breakdown = false;
 
     while (iter < cycle_end) {
-      const Real rho_new = dot_coupled_composite(rhat_p, rhat_ib, rr_p, rr_ib);
+      const Real rho_new = dot_coupled(rhat_p, rhat_ib, rr_p, rr_ib);
       if (!std::isfinite(rho_new)) {
         breakdown = "non-finite rho";
         cycle_breakdown = true;
@@ -1016,16 +748,13 @@ int INSSolver::SolveCompositeIBProjection(
         break;
       }
 
-      lincomb_coupled_composite(search_p, search_ib, 1.0_rt, search_p,
-                                search_ib, -omega, image_p, image_ib,
-                                active_masks);
-      lincomb_coupled_composite(search_p, search_ib, beta, search_p, search_ib,
-                                1.0_rt, rr_p, rr_ib, active_masks);
+      lincomb_coupled(search_p, search_ib, 1.0_rt, search_p, search_ib, -omega,
+                      image_p, image_ib, active_masks);
+      lincomb_coupled(search_p, search_ib, beta, search_p, search_ib, 1.0_rt,
+                      rr_p, rr_ib, active_masks);
 
-      ApplyCompositeIBSchurOp(search_p, search_ib, image_p, image_ib,
-                              active_masks);
-      const Real rhat_image =
-          dot_coupled_composite(rhat_p, rhat_ib, image_p, image_ib);
+      apply_scaled_operator(search_p, search_ib, image_p, image_ib);
+      const Real rhat_image = dot_coupled(rhat_p, rhat_ib, image_p, image_ib);
       if (!std::isfinite(rhat_image)) {
         breakdown = "non-finite rhat-v";
         cycle_breakdown = true;
@@ -1043,9 +772,9 @@ int INSSolver::SolveCompositeIBProjection(
         break;
       }
 
-      lincomb_coupled_composite(intermediate_p, intermediate_ib, 1.0_rt, rr_p,
-                                rr_ib, -alpha, image_p, image_ib, active_masks);
-      const Real intermediate_resid2 = dot_coupled_composite(
+      lincomb_coupled(intermediate_p, intermediate_ib, 1.0_rt, rr_p, rr_ib,
+                      -alpha, image_p, image_ib, active_masks);
+      const Real intermediate_resid2 = dot_coupled(
           intermediate_p, intermediate_ib, intermediate_p, intermediate_ib);
       if (!std::isfinite(intermediate_resid2)) {
         breakdown = "non-finite residual";
@@ -1053,27 +782,25 @@ int INSSolver::SolveCompositeIBProjection(
         break;
       }
       if (intermediate_resid2 <= tol2) {
-        saxpy_coupled_composite(p, m_ib_force, alpha, search_p, search_ib,
-                                active_masks);
+        saxpy_coupled(p, scaled_force, alpha, search_p, search_ib,
+                      active_masks);
         ++iter;
         break;
       }
 
-      ApplyCompositeIBSchurOp(intermediate_p, intermediate_ib,
-                              image_intermediate_p, image_intermediate_ib,
-                              active_masks);
+      apply_scaled_operator(intermediate_p, intermediate_ib,
+                            image_intermediate_p, image_intermediate_ib);
       const Real image_norm2 =
-          dot_coupled_composite(image_intermediate_p, image_intermediate_ib,
-                                image_intermediate_p, image_intermediate_ib);
+          dot_coupled(image_intermediate_p, image_intermediate_ib,
+                      image_intermediate_p, image_intermediate_ib);
       if (!std::isfinite(image_norm2)) {
         breakdown = "non-finite t-t";
         cycle_breakdown = true;
         break;
       }
       omega = (image_norm2 > tiny)
-                  ? dot_coupled_composite(image_intermediate_p,
-                                          image_intermediate_ib, intermediate_p,
-                                          intermediate_ib) /
+                  ? dot_coupled(image_intermediate_p, image_intermediate_ib,
+                                intermediate_p, intermediate_ib) /
                         image_norm2
                   : 0.0_rt;
       if (!std::isfinite(omega)) {
@@ -1082,17 +809,15 @@ int INSSolver::SolveCompositeIBProjection(
         break;
       }
 
-      saxpy_coupled_composite(p, m_ib_force, alpha, search_p, search_ib,
-                              active_masks);
-      saxpy_coupled_composite(p, m_ib_force, omega, intermediate_p,
-                              intermediate_ib, active_masks);
-      lincomb_coupled_composite(rr_p, rr_ib, 1.0_rt, intermediate_p,
-                                intermediate_ib, -omega, image_intermediate_p,
-                                image_intermediate_ib, active_masks);
+      saxpy_coupled(p, scaled_force, alpha, search_p, search_ib, active_masks);
+      saxpy_coupled(p, scaled_force, omega, intermediate_p, intermediate_ib,
+                    active_masks);
+      lincomb_coupled(rr_p, rr_ib, 1.0_rt, intermediate_p, intermediate_ib,
+                      -omega, image_intermediate_p, image_intermediate_ib,
+                      active_masks);
 
       rho = rho_new;
-      const Real recursive_resid2 =
-          dot_coupled_composite(rr_p, rr_ib, rr_p, rr_ib);
+      const Real recursive_resid2 = dot_coupled(rr_p, rr_ib, rr_p, rr_ib);
       ++iter;
       if (std::abs(omega) < tiny) {
         breakdown = "omega breakdown";
@@ -1118,103 +843,24 @@ int INSSolver::SolveCompositeIBProjection(
   resid = evaluate_residual().norm();
   remember_current_if_better(resid);
 
-  bool converged = std::isfinite(resid) && resid <= tol;
-  if (!converged && std::isfinite(best_resid)) {
+  if (std::isfinite(best_resid) &&
+      (!std::isfinite(resid) || best_resid < resid)) {
     copy_composite_unmasked(p, best_p);
-    m_ib_force = best_ib;
-    resid = best_resid;
+    scaled_force = best_ib;
     if (m_pressure_singular)
       subtract_composite_mean(p, active_masks);
-    converged = resid <= tol;
+    resid = evaluate_residual().norm();
   }
 
-  Vector<std::unique_ptr<MultiFab>> zero_p, force_p, rhs_pressure;
-  define_composite_like(zero_p, p, 1);
-  define_composite_like(force_p, p, 0);
-  define_composite_like(rhs_pressure, rhs_p, 0);
-  std::vector<Real> force_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> zero_force(rhs_ib.size(), 0.0_rt);
+  const bool converged = std::isfinite(resid) && resid <= tol;
 
-  const auto apply_force_block = [&](const std::vector<Real> &force,
-                                     std::vector<Real> &result) {
-    ApplyCompositeIBSchurOp(zero_p, force, force_p, result, active_masks);
-  };
-
-  const CoupledResidual pre_block_residual = evaluate_residual();
-  const Real pre_block_pressure_relres =
-      std::sqrt(pre_block_residual.pressure_norm2 /
-                std::max(rhs_p_norm2, Real(1.0e-300)));
-
-  if (!converged && pre_block_pressure_relres > m_poisson_tol) {
-    // This is not the exact eliminated Schur complement; it prevents a bad
-    // force iterate from leaving a large pressure/divergence residual after
-    // coupled BiCGStab stops.
-    for (int block_iter = 0; block_iter < 4; ++block_iter) {
-      ApplyCompositeIBSchurOp(p, zero_force, Ax_p, Ax_ib, active_masks);
-      std::vector<Real> rhs_force(rhs_ib.size(), 0.0_rt);
-      for (std::size_t i = 0; i < rhs_force.size(); ++i)
-        rhs_force[i] = rhs_ib[i] - Ax_ib[i];
-      solve_vector_bicgstab(m_ib_force, rhs_force, m_poisson_tol,
-                            m_poisson_max_iter, tiny, apply_force_block);
-
-      ApplyCompositeIBSchurOp(zero_p, m_ib_force, force_p, force_ib,
-                              active_masks);
-      lincomb_composite(rhs_pressure, 1.0_rt, rhs_p, -1.0_rt, force_p,
-                        active_masks);
-      const int saved_verbose = m_verbose;
-      m_verbose = 0;
-      SolveCompositeModifiedPoisson(p, rhs_pressure, active_masks);
-      m_verbose = saved_verbose;
-
-      resid = evaluate_residual().norm();
-      remember_current_if_better(resid);
-      if (std::isfinite(resid) && resid <= tol) {
-        converged = true;
-        break;
-      }
-    }
-  }
-
-  if (!converged && std::isfinite(best_resid) && best_resid < resid) {
-    copy_composite_unmasked(p, best_p);
-    m_ib_force = best_ib;
-    resid = best_resid;
-    if (m_pressure_singular)
-      subtract_composite_mean(p, active_masks);
-  }
-
-  // A coupled residual rollback may favor a smaller IB residual while
-  // restoring an unacceptable pressure block.  With the selected force held
-  // fixed, finish on the pressure constraint so the projected velocity is
-  // solenoidal even when the marker equations remain rank deficient.
-  const CoupledResidual selected_residual = evaluate_residual();
-  const Real selected_pressure_relres = std::sqrt(
-      selected_residual.pressure_norm2 / std::max(rhs_p_norm2, Real(1.0e-300)));
-  if (selected_pressure_relres > m_poisson_tol) {
-    ApplyCompositeIBSchurOp(zero_p, m_ib_force, force_p, force_ib,
-                            active_masks);
-    lincomb_composite(rhs_pressure, 1.0_rt, rhs_p, -1.0_rt, force_p,
-                      active_masks);
-    const int saved_verbose = m_verbose;
-    const Real saved_tol = m_poisson_tol;
-    const Real pressure_rhs_norm =
-        std::sqrt(std::max(dot_composite(rhs_pressure, rhs_pressure), tiny));
-    const Real original_rhs_norm = std::sqrt(std::max(rhs_p_norm2, tiny));
-    m_poisson_tol = std::max(
-        32.0_rt * std::numeric_limits<Real>::epsilon(),
-        std::min(saved_tol, saved_tol * original_rhs_norm / pressure_rhs_norm));
-    m_verbose = 0;
-    SolveCompositeModifiedPoisson(p, rhs_pressure, active_masks);
-    m_verbose = saved_verbose;
-    m_poisson_tol = saved_tol;
-  }
-
-  const CoupledResidual final_residual = evaluate_residual();
-  resid = final_residual.norm();
-  converged = std::isfinite(resid) && resid <= tol;
+  scaling.to_physical_force(scaled_force, m_ib_force);
+  scaling.unscale_pressure(rr_p);
+  const CoupledResidual final_residual{dot_composite(rr_p, rr_p),
+                                       norm2_vector(rr_ib)};
 
   if (!converged) {
-    const Real relres = resid / rhs_norm;
+    const Real scaled_relres = resid / rhs_norm;
     const Real abs_p =
         std::sqrt(std::max(final_residual.pressure_norm2, Real(0.0)));
     const Real abs_ib = std::sqrt(std::max(final_residual.ib_norm2, Real(0.0)));
@@ -1242,17 +888,17 @@ int INSSolver::SolveCompositeIBProjection(
         << ", markers = " << m_ib_geometry.markers.size()
         << ", constraints = " << rhs_ib.size()
         << ", pressure_singular = " << m_pressure_singular
-        << ", relres = " << relres << ", pressure_relres = " << relres_p
-        << ", ib_relres = " << relres_ib << ", |r_p| = " << abs_p
-        << ", |rhs_p| = " << rhs_p_norm << ", |r_ib| = " << abs_ib
-        << ", |rhs_ib| = " << rhs_ib_norm << ").";
+        << ", scaled_relres = " << scaled_relres
+        << ", pressure_relres = " << relres_p << ", ib_relres = " << relres_ib
+        << ", |r_p| = " << abs_p << ", |rhs_p| = " << rhs_p_norm
+        << ", |r_ib| = " << abs_ib << ", |rhs_ib| = " << rhs_ib_norm << ").";
     amrex::Warning(msg.str());
   }
 
   if (m_verbose > 1) {
-    const Real relres = resid / rhs_norm;
+    const Real scaled_relres = resid / rhs_norm;
     Print() << "  Composite IB BiCGStab: " << iter
-            << " iters, |r|/|rhs| = " << relres << "\n";
+            << " iters, scaled |r|/|rhs| = " << scaled_relres << "\n";
   }
   return iter;
 }
@@ -1270,19 +916,26 @@ void INSSolver::CheckOutflowPressurePin() {
     return;
   }
 
-  constexpr int lev = 0;
-  MultiFab phi(grids[lev], dmap[lev], 1, 1);
-  phi.setVal(1.0);
-  FillPresGhostPhys(lev, phi);
+  const int nlev = finest_level + 1;
+  auto active_masks = BuildCompositeActiveMasks();
+  CellHierarchy phi(nlev);
+  CellHierarchy Aphi(nlev);
+  for (int lev = 0; lev < nlev; ++lev) {
+    phi[lev] = std::make_unique<MultiFab>(grids[lev], dmap[lev], 1, 1);
+    Aphi[lev] = std::make_unique<MultiFab>(grids[lev], dmap[lev], 1, 0);
+    phi[lev]->setVal(1.0);
+    Aphi[lev]->setVal(0.0);
+  }
+  mask_composite(phi, active_masks);
+  ApplyCompositeModifiedPoissonOp(phi, Aphi, active_masks);
 
-  MultiFab Aphi(grids[lev], dmap[lev], 1, 0);
-  Aphi.setVal(0.0);
-  ApplyModifiedPoissonOp(lev, phi, Aphi);
-
-  Real norm = Aphi.norminf(0, 0);
+  Real norm = 0.0_rt;
+  for (int lev = 0; lev < nlev; ++lev)
+    norm = std::max(norm, Aphi[lev]->norminf(0, 0));
   ParallelDescriptor::ReduceRealMax(norm);
   if (m_verbose > 0)
-    Print() << "Pressure-pin check: |-D B^N G 1|_inf = " << norm << "\n";
+    Print() << "Pressure-pin check: composite |-D B^N G 1|_inf = " << norm
+            << "\n";
 
   const Real threshold = 1024.0_rt * std::numeric_limits<Real>::epsilon();
   if (!std::isfinite(norm) || norm <= threshold) {
@@ -1305,22 +958,9 @@ void INSSolver::ProjectPerot() {
   // averaged fine flux before the hierarchy projection builds its RHS.
   AverageDownVelocity(m_vstar);
 
-  Vector<std::unique_ptr<iMultiFab>> active_masks(nlev);
-  for (int lev = 0; lev < nlev; ++lev) {
-    active_masks[lev] =
-        std::make_unique<iMultiFab>(grids[lev], dmap[lev], 1, 0);
-    active_masks[lev]->setVal(1);
-  }
-  for (int lev = 0; lev < finest_level; ++lev) {
-    BoxArray covered = grids[lev + 1];
-    covered.coarsen(ref_ratio[lev]);
-    for (int i = 0; i < covered.size(); ++i) {
-      const Box &bx = covered[i];
-      active_masks[lev]->setVal(0, bx, 0, 1, 0);
-    }
-  }
+  auto active_masks = BuildCompositeActiveMasks();
 
-  Vector<std::unique_ptr<MultiFab>> rhs(nlev);
+  CellHierarchy rhs(nlev);
   for (int lev = 0; lev < nlev; ++lev) {
     const BoxArray &ba = grids[lev];
     const DistributionMapping &dm = dmap[lev];

@@ -4,7 +4,7 @@ description: One-line purpose for every source file, so future agents don't have
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-`src/` layout (updated 2026-07-09 — composite Perot/IB projection):
+`src/` layout (updated 2026-07-11 — composite Perot/IB projection):
 
 | File                     | Role                                                                                |
 |--------------------------|-------------------------------------------------------------------------------------|
@@ -14,8 +14,8 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 | `INSSolver_BC.cpp`       | `ParseBCs`, `BuildBCRecs`, `FillVelGhostPhys` (Dirichlet/slip/outflow, normal vs tangential staggered handling, homogeneous flag), `FillPresGhostPhys` (Neumann walls / Dirichlet-0 outflow), `EnforceVelDirichlet`. |
 | `INSSolver_Advect.cpp`   | `ComputeAdvection(lev, adv, vel_in)` — face-by-face `-(u·∇)u`; `vel_in` already FillPatched + physical-BC filled. |
 | `INSSolver_Diffuse.cpp`  | Face Laplacian/gradient kernels, per-level `ApplyBNFace`, hierarchy `ApplyCompositeBNFaces`, and predictor-RHS construction. |
-| `INSSolver_Project.cpp`  | Modified-Poisson/IB hierarchy operators and Krylov solves, checked AMReX Poisson pressure-block warm start, `ProjectPerot`. |
-| `INSSolver_IB.cpp`       | IB geometry initialization, Peskin 4-point `H/E`, finest-level IB tagging, single-level coupled BiCGStab retained as a singular-system warm start. |
+| `INSSolver_Project.cpp`  | Modified-Poisson/coupled-IB hierarchy operators, scaled Krylov algebra, checked AMReX Poisson pressure-block warm start, `ProjectPerot`. |
+| `INSSolver_IB.cpp`       | IB geometry initialization, Peskin 4-point spread/interpolate (`H/E`), finest-level IB tagging, and level-local kernels used by the composite solve. |
 | `IBGeometry.H/.cpp`      | Dimension-selected host loaders plus marker construction and device copies for IB geometry: 2D ASCII line-segment curves, 3D ASCII/binary STL triangle surfaces with exact coordinate de-duplication into indexed connectivity. |
 | `CMakeLists.txt`         | Executables `ins_solver` and `ins_solver_2d`, link MPI + AMReX (Trilinos not currently needed). |
 
@@ -49,9 +49,9 @@ Top-level files:
 **How to apply**: when adding new functionality, prefer extending an
 existing file in this list to creating a new file unless the new piece
 is genuinely a separate concern.  IB geometry and spread/interp kernels
-live in `INSSolver_IB.cpp`; composite Schur operators and Krylov orchestration
-live in `INSSolver_Project.cpp`.  Wall BCs belong in the existing BC and
-diffusion/projection files.
+live in `INSSolver_IB.cpp`; composite projection operators and Krylov
+orchestration live in `INSSolver_Project.cpp`.  Wall BCs belong in the
+existing BC and diffusion/projection files.
 
 **Do not** restore `INSSolver_Stress.cpp` or `TrilinosPoissonSolver.H`
 (deleted on 2026-05-14) — they were single-level IB-stress and assembled-

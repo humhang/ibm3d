@@ -5,9 +5,10 @@ type: feedback
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
 **Rule**: when replacing the current hand-rolled coupled BiCGStab solver,
-implement the Taira–Colonius IBPM operator `S = Q^T B^N Q` matrix-free
-as a `Tpetra::Operator`.  Do **not** assemble it as a
-`Tpetra::CrsMatrix` and hand to AMG.
+implement the pressure-eliminated marker operator
+`S_f = M - B A^-1 C` matrix-free and solve it with Belos FGMRES.  Use an
+AMReX MLMG-based approximate composite pressure inverse and a local marker
+preconditioner.  Do **not** assemble a `Tpetra::CrsMatrix` and hand it to AMG.
 
 **Why**: settled with the user during the 2026-05-14 conversation
 after a tradeoff discussion covering:
@@ -26,16 +27,16 @@ recommendation in the follow-up.
 
 **How to apply**:
 
-- When the scalable IB solve begins, build the operator as a
-  `Tpetra::Operator` subclass that calls AMReX-side `apply()` routines
-  (spread, grad, polynomial-in-L, divergence, interpolate).
-- Start with Belos GMRES for the outer Krylov solve.  The formal conforming
-  operator is symmetric under the correct adjoint weighting, but the current
-  C/F interpolation and masking are not assumed symmetric; use CG only after
-  the implemented composite operator passes an adjointness/SPD check.
-- Use AMReX `MLMG` wrapped as a `Tpetra::Operator` for the
-  preconditioner — the standard Poisson is a good local approximation
-  to the modified Poisson away from the IB.
+- Expose matrix-free applications of `A`, `B`, `C`, and `M` through
+  AMReX-side spread, gradient, `B^N`, divergence, interpolation, FillPatch,
+  and average-down routines.
+- Apply `A^-1` approximately with a fixed small MLMG cycle count when a
+  linear Schur `apply()` is required.  If inner work varies, use FGMRES and
+  retain a true full-coupled residual check.
+- Preserve the current `h_l` pressure-row and `h_f^(d-1)/w_k` marker-column
+  scaling at the Tpetra boundary.
+- Start marker preconditioning with local block Jacobi built from
+  `E B^N H`; do not restore the retired alternating force/pressure cleanup.
 - If a future requirement forces matrix assembly (e.g. a direct solve
   for a very small Lagrangian-point count) — confirm with the user
   before going that route.  This decision is intentional, not default.

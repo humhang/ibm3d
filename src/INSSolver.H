@@ -229,24 +229,6 @@ public:
   void ApplyCompositeBNFaces(amrex::Vector<FaceMFArray> &src,
                              amrex::Vector<FaceMFArray> &dst);
 
-  /// Apply the modified-Poisson operator (D B^N G) to a cell-centred φ.
-  /// `phi` must have its 1-cell ghost layer filled.
-  void ApplyModifiedPoissonOp(int lev, const amrex::MultiFab &phi,
-                              amrex::MultiFab &result);
-
-  /// Matrix-free BiCGStab on one level of (D B^N G) p = rhs.
-  /// `p` is in/out — pass the previous-step pressure as the warm start.
-  /// `rhs` is read-only.  Returns the iteration count.
-  int SolveModifiedPoisson(int lev, amrex::MultiFab &p,
-                           const amrex::MultiFab &rhs);
-
-  int SolveIBProjection(int lev, amrex::MultiFab &p,
-                        const amrex::MultiFab &rhs_p,
-                        const std::vector<amrex::Real> &rhs_ib);
-  void ApplyIBSchurOp(int lev, const amrex::MultiFab &phi,
-                      const std::vector<amrex::Real> &force,
-                      amrex::MultiFab &result_p,
-                      std::vector<amrex::Real> &result_ib);
   void SpreadIBForce(int lev, int dir, const std::vector<amrex::Real> &force,
                      amrex::MultiFab &hforce);
   void InterpolateIBVelocity(
@@ -254,6 +236,8 @@ public:
       std::vector<amrex::Real> &marker_vel) const;
   void AddIBTags(int lev, amrex::TagBoxArray &tags) const;
 
+  amrex::Vector<std::unique_ptr<amrex::iMultiFab>>
+  BuildCompositeActiveMasks() const;
   void ApplyCompositeModifiedPoissonOp(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result,
@@ -264,13 +248,14 @@ public:
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result_p,
       std::vector<amrex::Real> *result_ib,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
-  void ApplyCompositeIBSchurOp(
+  void ApplyCompositeIBProjectionOp(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
       const std::vector<amrex::Real> &force,
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result_p,
       std::vector<amrex::Real> &result_ib,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
-  void ApplyCompositePoissonPreconditioner(
+  /// Standard-Poisson approximation used only as a candidate initial guess.
+  void BuildCompositePoissonInitialGuess(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
       const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
@@ -326,11 +311,6 @@ public:
   /// fixed-grid temporal self-convergence study.  Called once after
   /// the time loop.
   void WriteTG2DDiagnostics() const;
-
-  // Compatibility helper: subtract the (volume-weighted) mean of a
-  // cell-centred MultiFab in place — needed for the singular periodic
-  // pressure system.
-  void SubtractMean(int lev, amrex::MultiFab &mf);
 };
 
 #endif

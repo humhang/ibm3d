@@ -59,9 +59,23 @@ over-constrained coarse-grid marker system.  The current implementation
 uses one marker per immersed element centroid, with element length/area
 as its quadrature weight.
 
-The coupled hierarchy is solved with matrix-free BiCGStab using checked
-pressure-block warm starts, periodic true-residual replacement, and
-best-iterate rollback before the pressure cleanup.
+The coupled hierarchy is solved with matrix-free BiCGStab using the previous
+state as the singular-system warm start, checked AMReX pressure-block warm
+starts for non-singular systems, periodic true-residual replacement, and
+best-iterate rollback.  The Krylov system scales pressure rows by the
+geometric-mean cell spacing on each level and uses the marker unknown
+`f_k = h_f^(d-1)/w_k * fhat_k`, while stored forces and residual diagnostics
+remain in physical units.  This balances the extra derivative in the pressure
+rows against the quadrature-weighted spread block.  There are no post-solve
+alternating force/pressure subiterations or pressure-only cleanup.
+
+This scaling is equilibration, not a preconditioner.  The current solver still
+requires roughly hundreds of iterations for the small IB smoke cases and can
+require thousands for denser or non-singular geometries.  In particular, the
+3D cylinder channel exceeds its checked-in 1000-iteration limit and converges
+in about 2657 iterations when the limit is raised to 4000.  When `rhs_ib=0`,
+the diagnostic `ib_relres` is infinite for any nonzero marker residual; use
+the scaled coupled residual and absolute marker residual/slip together.
 
 Why the modified Poisson `D B^N G` and not the standard `∇²` of a
 Chorin projection?  Perot 1997 shows that the exact block-LU
@@ -245,11 +259,13 @@ the pressure, so the mean is not removed).
 
 - Moving/deforming-body kinematics beyond uniform prescribed
   `ib.velocity`.
-- Tpetra/Belos wrapping and MLMG preconditioning for the IB Schur
-  operator.  The current coupled AMR IB solve uses in-repo matrix-free
-  BiCGStab with checked pressure-block warm starts, periodic true-residual
-  replacement, and cleanup, but no
-  in-iteration multilevel block preconditioner.
+- The matrix-free marker-space force Schur solver
+  `S_f = M - B A^-1 C`: Belos FGMRES outside, an AMReX MLMG-based
+  approximate composite pressure inverse inside, and a local
+  `E B^N H` marker-block preconditioner.  The current scaled coupled
+  BiCGStab has no in-iteration block preconditioner, so scaling alone does
+  not cure its slow convergence.  The settled design and residual-acceptance
+  requirements are in `.agent-memory/project_ib_matrixfree_plan.md`.
 - Temporal subcycling between AMR levels.
 - Inhomogeneous Dirichlet data inside the truncated Neumann series
   (handled approximately: homogeneous in the series, re-imposed on

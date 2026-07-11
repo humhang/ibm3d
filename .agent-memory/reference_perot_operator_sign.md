@@ -19,10 +19,11 @@ Unpreconditioned CG would require a positive semidefinite operator: it
 takes `α = (r,r)/(d, A d)`, and `(d, A d) ≤ 0` for our `A = D B^N G`
 makes the search direction step in the wrong direction.
 
-The code's solution: in `ApplyModifiedPoissonOp`, **negate the result
-at the end** (`r ← −r`).  In `ProjectPerot`, build the RHS with a
-**negative** sign as well (`rhs = −(1/dt) D u*`).  Both negations
-cancel, so the recovered `p` solves the original Perot equation.
+The code's solution: the composite pressure operator applies the
+**negative** modified-Poisson operator (`-D B^N G`).  In `ProjectPerot`,
+build the RHS with a **negative** sign as well
+(`rhs = −(1/dt) D u*`).  Both negations cancel, so the recovered `p`
+solves the original Perot equation.
 
 The projection step itself — `u^{n+1} = u* − dt B^N G p` — keeps the
 natural positive sign on `B^N G p`.  Only the *solve* uses the

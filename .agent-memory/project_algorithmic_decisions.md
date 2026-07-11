@@ -34,8 +34,8 @@ Decisions baked into the current solver, with rationale:
    saddle-point operator.
 
 5. **Modified-Poisson sign and Krylov choice**.  `D B^N G` is negative
-   semidefinite on full periodic/Neumann levels, so
-   `ApplyModifiedPoissonOp` returns `-D B^N G` and `ProjectPerot` builds
+   semidefinite on full periodic/Neumann levels, so the composite pressure
+   operator applies `-D B^N G` and `ProjectPerot` builds
    `rhs = -(1/dt) D u*`.  Full-domain levels then have the positive sign,
    but composite C/F interpolation and active-cell masking are not assumed
    symmetric; the current solver therefore uses matrix-free **BiCGStab**,
@@ -79,9 +79,9 @@ Decisions baked into the current solver, with rationale:
    This Dirichlet-vel⇒Neumann-p / outflow-vel⇒Dirichlet-p pairing is
    the standard projection-method choice the user specified.
    - **Singular-system gate**: `m_pressure_singular` is true unless
-     some face is `outflow`.  `SolveModifiedPoisson` only subtracts
-     the mean of RHS/solution when singular.  Subtracting it with an
-     outflow present would remove the pressure level the outflow
+     some face is `outflow`.  The composite pressure and coupled IB solves
+     only subtract the mean of RHS/solution when singular.  Subtracting it
+     with an outflow present would remove the pressure level the outflow
      Dirichlet pins → wrong.
    - **Staggered handling**: normal component sits on the boundary
      face (set directly for Dirichlet, extrapolated for outflow);
@@ -99,11 +99,12 @@ Decisions baked into the current solver, with rationale:
      and `tests/3d/channel/inputs.channel` have been run-verified.  The channel case is
      the outflow-Dirichlet pressure check.
 
-10. **The legacy per-level warm-start operator must zero its C/F ghosts**
-    (bug found + fixed 2026-05-18, `tests/3d/lid_amr/inputs.lid_amr`).  The per-level
-    modified-Poisson Krylov path (`SolveModifiedPoisson` / `ApplyBNFace` /
-    `ApplyModifiedPoissonOp`) only fills ghosts via `FillBoundary` +
-    domain physical BC.  It does **not** interpolate C/F ghosts from
+10. **Retired per-level modified-Poisson needed valid C/F ghosts**
+    (bug found + fixed 2026-05-18, `tests/3d/lid_amr/inputs.lid_amr`;
+    retained as historical context after the composite solve became the
+    sole pressure path).  The retired per-level pressure Krylov path only
+    filled ghosts via `FillBoundary` + domain physical BC.  It did **not**
+    interpolate C/F ghosts from
     coarse.  When a fine patch has an *interior* C/F interface (as in
     the lid cavity, where vorticity tagging hugs the walls) the
     working MultiFabs' C/F ghost cells were uninitialised → `G φ`
@@ -157,14 +158,13 @@ Decisions baked into the current solver, with rationale:
        `pc_interp` workaround avoided NaNs but imposed an O(dx) pressure
        jump at every C/F interface.
 
-    5. **Per-level operator is non-symmetric → use BiCGStab, not CG**.
+    5. **The retired per-level operator was non-symmetric**.
        Once a fine patch has a C/F interface the staggered `B^N` plus
        ad-hoc C/F ghost breaks D/G adjointness, so `−D B^N G` is not
        SPD; CG diverges (`|Gp|2` 1e7→1e16, oscillating).  The coarse
-       full-domain level has no C/F so CG worked there (masked it).
-       `SolveModifiedPoisson` is now matrix-free **BiCGStab** with
-       breakdown guards.  Converges ~80–190 iters/level to 1e-11 on
-       all three lid-cavity AMR levels.
+       full-domain level had no C/F so CG worked there (masked it).  The
+       current hierarchy operator keeps all active pressure equations in
+       one composite BiCGStab solve.
 
     **Updated 2026-07-09**: the predictor, modified-Poisson/IB operator,
     and projection now apply every `B^N` term across the hierarchy.
@@ -228,7 +228,7 @@ Decisions baked into the current solver, with rationale:
     active limit.
 
 14. **The first IB projection path is executable but hand-rolled**
-    (added 2026-05-20; coupled solver changed to BiCGStab 2026-07-10).
+    (added 2026-05-20; coupled solver scaled on 2026-07-10).
     `IBGeometry` loads 2D ASCII curves or 3D
     ASCII/binary STL surfaces, builds one marker per element centroid,
     stores host/device points/elements/markers as AMReX `GpuArray`
@@ -238,10 +238,16 @@ Decisions baked into the current solver, with rationale:
     faces, and GPU-ready IB refinement tagging.  The coupled AMR IB solve is
     an in-repo BiCGStab composite hierarchy solve for
     `[-D; E] B^N [G H] [p; f]`.  Non-singular systems use a checked
-    AMReX Poisson pressure-block initial guess; singular systems retain
-    the checked older block warm start.  The recurrence is periodically
-    replaced by the true matrix-free residual and the best exact-residual
-    iterate is retained for breakdown recovery.  IB
+    AMReX Poisson pressure-block initial guess; singular systems use the
+    previous pressure/force state directly as the warm start.  The Krylov
+    system scales each pressure row by the level's geometric-mean spacing
+    `h_l` and represents each physical marker force as
+    `f_k = h_f^(d-1)/w_k * fhat_k`.  Because `H` already contains marker
+    quadrature `w_k`, this makes all four uniform-grid blocks `O(1/h)` and
+    restores their expected cross-block adjoint scaling.  Stored forces and
+    block diagnostics remain physical.  The recurrence is periodically
+    replaced by the true scaled matrix-free residual and the best exact
+    scaled-residual iterate is retained for breakdown recovery.  IB
     coupling is applied only on the finest AMR level; coarser active
     pressure equations remain part of the same Krylov solve.  The supplied
     IB smoke cases are:
@@ -249,5 +255,14 @@ Decisions baked into the current solver, with rationale:
     `tests/3d/ib_cylinder_channel`.  The cylinder case intentionally uses an
     STL panel size near `1.5 * dx` because the coupled solver still lacks an
     in-iteration IB block preconditioner and is sensitive to over-refined
-    marker meshes.
-    The planned Tpetra/Belos + MLMG preconditioning remains future work.
+    marker meshes.  The former post-Krylov alternating force/pressure
+    subiterations and pressure-only cleanup were removed; they were not the
+    eliminated Schur complement and are not part of the future algorithm.
+    Scaling improves robustness and makes the combined residual meaningful;
+    it is not a preconditioner.  Representative one-step counts are 627 for
+    the 2D AMR square at `1e-10` and 2657 for the non-singular 3D cylinder at
+    `1e-4` after raising its iteration cap.
+    The settled next solver is marker-space FGMRES on
+    `M - B A^-1 C`, with an approximate composite pressure inverse from
+    AMReX MLMG and a local marker-block preconditioner.  See
+    `project_ib_matrixfree_plan.md`.

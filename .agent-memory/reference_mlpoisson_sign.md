@@ -29,7 +29,7 @@ NS+AMR implementation and was caught only via end-to-end testing; the
 MLMG convergence diagnostic looked clean because the wrong-sign system
 also converges, it just doesn't enforce divergence-free.)
 
-The current `ApplyCompositePoissonPreconditioner` use is different: its
+The current `BuildCompositePoissonInitialGuess` use is different: its
 target matrix-free operator is `-D B^N G`, approximately `-∇²`, while
 `MLPoisson` applies `+∇²`.  It therefore passes `-rhs` to MLMG.  The result
 is only a candidate initial guess and is retained only when the true
