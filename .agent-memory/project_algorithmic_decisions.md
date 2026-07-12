@@ -227,42 +227,36 @@ Decisions baked into the current solver, with rationale:
     advective dt immediately; the diffusive `B^N` cap may still be the
     active limit.
 
-14. **The first IB projection path is executable but hand-rolled**
-    (added 2026-05-20; coupled solver scaled on 2026-07-10).
+14. **The IB projection uses a matrix-free force Schur solve**
+    (initial path added 2026-05-20; force Schur path added 2026-07-11).
     `IBGeometry` loads 2D ASCII curves or 3D
     ASCII/binary STL surfaces, builds one marker per element centroid,
     stores host/device points/elements/markers as AMReX `GpuArray`
     records, and uploads device copies.  `INSSolver_IB.cpp` implements
     Peskin 4-point `H/E` as marker-centred finite-support kernels,
     owner-mask interpolation plus atomics to avoid double-counted shared
-    faces, and GPU-ready IB refinement tagging.  The coupled AMR IB solve is
-    an in-repo BiCGStab composite hierarchy solve for
-    `[-D; E] B^N [G H] [p; f]`.  Non-singular systems use a checked
-    AMReX Poisson pressure-block initial guess; singular systems use the
-    previous pressure/force state directly as the warm start.  The Krylov
-    system scales each pressure row by the level's geometric-mean spacing
-    `h_l` and represents each physical marker force as
+    faces, and GPU-ready IB refinement tagging.  The coupled AMR IB solve
+    eliminates pressure and applies `M - B A^-1 C` matrix-free in marker
+    space.  The in-repo outer BiCGStab uses fixed MLMG preconditioner cycles
+    plus fixed modified-Poisson defect corrections for its approximate
+    pressure inverse.  The scaling represents each physical marker force as
     `f_k = h_f^(d-1)/w_k * fhat_k`.  Because `H` already contains marker
     quadrature `w_k`, this makes all four uniform-grid blocks `O(1/h)` and
     restores their expected cross-block adjoint scaling.  Stored forces and
-    block diagnostics remain physical.  The recurrence is periodically
-    replaced by the true scaled matrix-free residual and the best exact
-    scaled-residual iterate is retained for breakdown recovery.  IB
+    block diagnostics remain physical.  Pressure is recovered with the exact
+    modified operator, and the original scaled coupled residual controls
+    acceptance.  IB
     coupling is applied only on the finest AMR level; coarser active
     pressure equations remain part of the same Krylov solve.  The supplied
     IB smoke cases are:
     `tests/3d/ib_plane`, `tests/3d/ib_plane_amr`, and
     `tests/3d/ib_cylinder_channel`.  The cylinder case intentionally uses an
-    STL panel size near `1.5 * dx` because the coupled solver still lacks an
-    in-iteration IB block preconditioner and is sensitive to over-refined
-    marker meshes.  The former post-Krylov alternating force/pressure
-    subiterations and pressure-only cleanup were removed; they were not the
-    eliminated Schur complement and are not part of the future algorithm.
-    Scaling improves robustness and makes the combined residual meaningful;
-    it is not a preconditioner.  Representative one-step counts are 627 for
-    the 2D AMR square at `1e-10` and 2657 for the non-singular 3D cylinder at
-    `1e-4` after raising its iteration cap.
-    The settled next solver is marker-space FGMRES on
-    `M - B A^-1 C`, with an approximate composite pressure inverse from
-    AMReX MLMG and a local marker-block preconditioner.  See
-    `project_ib_matrixfree_plan.md`.
+    STL panel size near `1.5 * dx` because the solver still lacks a marker
+    preconditioner and is sensitive to over-refined marker meshes.  The
+    former alternating force/pressure subiterations and pressure-only cleanup
+    remain removed.  Representative one-step Schur counts are 1 for the 2D
+    AMR square and 7 for the four-level 2D cylinder.  The non-singular 3D
+    cylinder still fails the recovered true residual and invokes the exact
+    coupled fallback, which takes 2657 iterations at `1e-4` when its cap is
+    raised to 4000.  The settled next step is Belos FGMRES with a local marker
+    preconditioner.  See `project_ib_matrixfree_plan.md`.

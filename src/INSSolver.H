@@ -113,6 +113,8 @@ private:
   amrex::Real m_refine_vort = 5.0;
   amrex::Real m_poisson_tol = 1.0e-10; ///< Krylov relative tolerance
   int m_poisson_max_iter = 500;
+  int m_ib_schur_mg_iters = 2;
+  int m_ib_schur_pressure_corrections = 16;
   bool m_check_pressure_pin = false;
   int m_verbose = 1;
   std::string m_plot_prefix = "plt";
@@ -262,8 +264,10 @@ public:
   int SolveCompositeModifiedPoisson(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
       const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs,
-      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
-  /// Matrix-free BiCGStab for the composite pressure/finest-level IB system.
+      const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks,
+      amrex::Real relative_tolerance = -1.0);
+  /// Marker-space BiCGStab for the force Schur complement, with a fixed
+  /// MLMG-based approximate inverse for the composite pressure block.
   int SolveCompositeIBProjection(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
       const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs_p,

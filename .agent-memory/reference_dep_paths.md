@@ -13,8 +13,8 @@ AMReX 26.01 (currently used):
 - HDF5 support enabled (1.14.6 from MacPorts)
 - No OpenMP, no SIMD, no GPU backend
 
-Trilinos 17.0.0 (not active in the current build; needed when replacing
-the hand-rolled IB BiCGStab path with the planned Tpetra/Belos solve):
+Trilinos 17.0.0 (not active in the current build; needed when replacing the
+transitional in-repo Schur BiCGStab with the planned Tpetra/Belos solve):
 
 - Install prefix: `/Users/hang/opt/trilinos-17.0.0/install`
 - CMake config dir: `/Users/hang/opt/trilinos-17.0.0/install/lib/cmake/Trilinos`

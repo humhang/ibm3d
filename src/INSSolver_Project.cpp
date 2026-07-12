@@ -9,17 +9,17 @@
  *   B^N = Σ_{k=0}^N (εL)^k,   ε = ν dt / 2
  *
  * The operator D B^N G is applied matrix-free (compose existing
- * gradient, face-Laplacian, divergence pieces).  The pressure-only
- * hierarchy solve and the coupled AMR IB block use BiCGStab.  AMReX's
- * composite Poisson solve supplies a checked
- * pressure-block initial guess for non-singular modified/IB systems.
+ * gradient, face-Laplacian, divergence pieces).  Pressure-only solves use
+ * hierarchy BiCGStab.  IB solves eliminate pressure with a marker-space
+ * force Schur operator whose fixed pressure inverse combines MLMG V-cycles
+ * with modified-operator corrections; final acceptance always uses the
+ * original coupled hierarchy operator.
  *
  * Multi-level projection uses a hierarchy-wide Krylov solve whose fine
  * pressure ghosts are filled from the current coarse iterate.  With IB
- * enabled, the Krylov vector spans all pressure levels plus the
- * Lagrangian force unknowns, while the IB rows/force columns are applied
- * only on the finest level; applying the same IB rows on coarser levels
- * makes the marker constraints over-dense and singular.
+ * enabled, pressure spans all levels while the Schur Krylov vector contains
+ * finest-level Lagrangian forces only.  Applying the same IB rows on coarser
+ * levels makes the marker constraints over-dense and singular.
  */
 
 #include "INSSolver.H"
@@ -114,6 +114,11 @@ Real dot_vector(const std::vector<Real> &a, const std::vector<Real> &b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), Real(0.0));
 }
 
+Real dot_coupled(const CellHierarchy &a_p, const std::vector<Real> &a_ib,
+                 const CellHierarchy &b_p, const std::vector<Real> &b_ib) {
+  return dot_composite(a_p, b_p) + dot_vector(a_ib, b_ib);
+}
+
 void saxpy_vector(std::vector<Real> &dst, Real a, const std::vector<Real> &x) {
   for (std::size_t i = 0; i < dst.size(); ++i)
     dst[i] += a * x[i];
@@ -125,9 +130,19 @@ void lincomb_vector(std::vector<Real> &dst, Real a, const std::vector<Real> &x,
     dst[i] = a * x[i] + b * y[i];
 }
 
-Real dot_coupled(const CellHierarchy &a_p, const std::vector<Real> &a_ib,
-                 const CellHierarchy &b_p, const std::vector<Real> &b_ib) {
-  return dot_composite(a_p, b_p) + dot_vector(a_ib, b_ib);
+void saxpy_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
+                   const CellHierarchy &x_p, const std::vector<Real> &x_ib,
+                   const MaskHierarchy &mask) {
+  saxpy_composite(dst_p, a, x_p, mask);
+  saxpy_vector(dst_ib, a, x_ib);
+}
+
+void lincomb_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
+                     const CellHierarchy &x_p, const std::vector<Real> &x_ib,
+                     Real b, const CellHierarchy &y_p,
+                     const std::vector<Real> &y_ib, const MaskHierarchy &mask) {
+  lincomb_composite(dst_p, a, x_p, b, y_p, mask);
+  lincomb_vector(dst_ib, a, x_ib, b, y_ib);
 }
 
 Real norm2_vector(const std::vector<Real> &a) { return dot_vector(a, a); }
@@ -135,12 +150,6 @@ Real norm2_vector(const std::vector<Real> &a) { return dot_vector(a, a); }
 struct CoupledResidual {
   Real pressure_norm2;
   Real ib_norm2;
-
-  [[nodiscard]] Real norm2() const { return pressure_norm2 + ib_norm2; }
-
-  [[nodiscard]] Real norm() const {
-    return std::sqrt(std::max(norm2(), Real(0.0)));
-  }
 };
 
 // H already contains marker quadrature.  This scaling equilibrates all four
@@ -177,12 +186,6 @@ struct CoupledScaling {
       values[lev]->mult(pressure_rows[lev], 0, 1, 0);
   }
 
-  void unscale_pressure(CellHierarchy &values) const {
-    AMREX_ALWAYS_ASSERT(values.size() == pressure_rows.size());
-    for (int lev = 0; lev < static_cast<int>(values.size()); ++lev)
-      values[lev]->mult(1.0_rt / pressure_rows[lev], 0, 1, 0);
-  }
-
   void to_scaled_force(const std::vector<Real> &physical,
                        std::vector<Real> &scaled) const {
     AMREX_ALWAYS_ASSERT(physical.size() == force_columns.size());
@@ -202,21 +205,6 @@ struct CoupledScaling {
   Vector<Real> pressure_rows;
   std::vector<Real> force_columns;
 };
-
-void saxpy_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
-                   const CellHierarchy &x_p, const std::vector<Real> &x_ib,
-                   const MaskHierarchy &mask) {
-  saxpy_composite(dst_p, a, x_p, mask);
-  saxpy_vector(dst_ib, a, x_ib);
-}
-
-void lincomb_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
-                     const CellHierarchy &x_p, const std::vector<Real> &x_ib,
-                     Real b, const CellHierarchy &y_p,
-                     const std::vector<Real> &y_ib, const MaskHierarchy &mask) {
-  lincomb_composite(dst_p, a, x_p, b, y_p, mask);
-  lincomb_vector(dst_ib, a, x_ib, b, y_ib);
-}
 
 Real sum_composite(const CellHierarchy &a) {
   Real value = 0.0_rt;
@@ -305,7 +293,7 @@ void INSSolver::ApplyCompositeModifiedPoissonOp(
 void INSSolver::ApplyCompositeProjectionBlocks(
     CellHierarchy &phi, const std::vector<Real> *force, CellHierarchy &result_p,
     std::vector<Real> *result_ib, const MaskHierarchy &active_masks) {
-  AMREX_ASSERT(result_ib == nullptr || force != nullptr);
+  BL_PROFILE("INSSolver::ApplyCompositeProjectionBlocks()");
 
   CellHierarchy phi_sync;
   define_composite_like(phi_sync, phi, 1);
@@ -314,8 +302,9 @@ void INSSolver::ApplyCompositeProjectionBlocks(
     amrex::average_down(*phi_sync[lev + 1], *phi_sync[lev], 0, 1,
                         ref_ratio[lev]);
 
-  if (result_ib != nullptr)
-    result_ib->assign(force->size(), 0.0_rt);
+  if (result_ib != nullptr) {
+    result_ib->assign(m_ib_geometry.markers.size() * AMREX_SPACEDIM, 0.0_rt);
+  }
 
   Vector<FaceMFArray> q_hierarchy(finest_level + 1);
   Vector<FaceMFArray> bq(finest_level + 1);
@@ -417,9 +406,10 @@ void INSSolver::BuildCompositePoissonInitialGuess(
     subtract_composite_mean(p, active_masks);
 }
 
-int INSSolver::SolveCompositeModifiedPoisson(
-    CellHierarchy &p, const CellHierarchy &rhs_in,
-    const MaskHierarchy &active_masks) {
+int INSSolver::SolveCompositeModifiedPoisson(CellHierarchy &p,
+                                             const CellHierarchy &rhs_in,
+                                             const MaskHierarchy &active_masks,
+                                             Real relative_tolerance) {
   BL_PROFILE("INSSolver::SolveCompositeModifiedPoisson()");
 
   CellHierarchy rhs;
@@ -442,8 +432,9 @@ int INSSolver::SolveCompositeModifiedPoisson(
   define_composite_like(Ax, p, 0);
 
   const Real rhs_norm2 = dot_composite(rhs, rhs);
-  const Real tol2 =
-      m_poisson_tol * m_poisson_tol * std::max(rhs_norm2, Real(1.0e-300));
+  const Real solve_tol =
+      (relative_tolerance > 0.0_rt) ? relative_tolerance : m_poisson_tol;
+  const Real tol2 = solve_tol * solve_tol * std::max(rhs_norm2, Real(1.0e-300));
 
   if (!m_pressure_singular) {
     CellHierarchy saved_p;
@@ -612,6 +603,10 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
   std::vector<Real> scaled_force;
   std::vector<Real> physical_force;
   scaling.to_scaled_force(m_ib_force, scaled_force);
+  CellHierarchy initial_p;
+  define_composite_like(initial_p, p, 1);
+  copy_composite_unmasked(initial_p, p);
+  const std::vector<Real> initial_scaled_force = scaled_force;
 
   CellHierarchy scaled_rhs_p;
   define_composite_like(scaled_rhs_p, rhs_p, 0);
@@ -623,105 +618,187 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
   const Real rhs_norm2 =
       dot_composite(scaled_rhs_p, scaled_rhs_p) + rhs_ib_norm2;
   const Real rhs_norm = std::sqrt(std::max(rhs_norm2, Real(1.0e-300)));
-  const Real tol = m_poisson_tol * rhs_norm;
+  const Real coupled_tol = m_poisson_tol * rhs_norm;
   const Real tiny = 1.0e-300;
-  const Real tol2 =
-      m_poisson_tol * m_poisson_tol * std::max(rhs_norm2, Real(1.0e-300));
+  const int nlev = finest_level + 1;
+  Vector<Geometry> mg_geom(geom.begin(), geom.begin() + nlev);
+  Vector<BoxArray> mg_grids(grids.begin(), grids.begin() + nlev);
+  Vector<DistributionMapping> mg_dmap(dmap.begin(), dmap.begin() + nlev);
 
-  CellHierarchy Ax_p, rr_p;
-  define_composite_like(Ax_p, p, 0);
-  define_composite_like(rr_p, p, 1);
-  std::vector<Real> Ax_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> rr_ib(rhs_ib.size(), 0.0_rt);
-
-  const auto apply_scaled_operator =
-      [&](CellHierarchy &input_p, const std::vector<Real> &input_force,
-          CellHierarchy &result_p, std::vector<Real> &result_ib) {
-        scaling.to_physical_force(input_force, physical_force);
-        ApplyCompositeIBProjectionOp(input_p, physical_force, result_p,
-                                     result_ib, active_masks);
-        scaling.scale_pressure(result_p);
-      };
-
-  const auto evaluate_residual = [&]() {
-    apply_scaled_operator(p, scaled_force, Ax_p, Ax_ib);
-    lincomb_composite(rr_p, 1.0_rt, scaled_rhs_p, -1.0_rt, Ax_p, active_masks);
-    for (std::size_t i = 0; i < rr_ib.size(); ++i)
-      rr_ib[i] = rhs_ib[i] - Ax_ib[i];
-    return CoupledResidual{dot_composite(rr_p, rr_p), norm2_vector(rr_ib)};
-  };
-
-  Real resid = evaluate_residual().norm();
-
-  CellHierarchy best_p;
-  define_composite_like(best_p, p, 1);
-  copy_composite_unmasked(best_p, p);
-  std::vector<Real> best_ib = scaled_force;
-  Real best_resid = resid;
-
-  const auto remember_current_if_better = [&](Real candidate_resid) {
-    if (!std::isfinite(candidate_resid) || candidate_resid >= best_resid)
-      return false;
-    copy_composite_unmasked(best_p, p);
-    best_ib = scaled_force;
-    best_resid = candidate_resid;
-    return true;
-  };
-
-  if (!m_pressure_singular) {
-    CellHierarchy saved_p, zero_p, force_p, guess_rhs;
-    define_composite_like(saved_p, p, 1);
-    define_composite_like(zero_p, p, 1);
-    define_composite_like(force_p, p, 0);
-    define_composite_like(guess_rhs, rhs_p, 0);
-    copy_composite_unmasked(saved_p, p);
-
-    scaling.to_physical_force(scaled_force, physical_force);
-    ApplyCompositeProjectionBlocks(zero_p, &physical_force, force_p, nullptr,
-                                   active_masks);
-    lincomb_composite(guess_rhs, 1.0_rt, rhs_p, -1.0_rt, force_p, active_masks);
-    BuildCompositePoissonInitialGuess(p, guess_rhs, active_masks);
-
-    const Real warm_resid = evaluate_residual().norm();
-    if (!remember_current_if_better(warm_resid))
-      copy_composite_unmasked(p, saved_p);
+  MLPoisson poisson(mg_geom, mg_grids, mg_dmap);
+  Array<LinOpBCType, AMREX_SPACEDIM> lobc;
+  Array<LinOpBCType, AMREX_SPACEDIM> hibc;
+  for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+    if (geom[0].isPeriodic(d)) {
+      lobc[d] = LinOpBCType::Periodic;
+      hibc[d] = LinOpBCType::Periodic;
+    } else {
+      lobc[d] = (m_bc_lo[d] == BCKind::outflow) ? LinOpBCType::Dirichlet
+                                                : LinOpBCType::Neumann;
+      hibc[d] = (m_bc_hi[d] == BCKind::outflow) ? LinOpBCType::Dirichlet
+                                                : LinOpBCType::Neumann;
+    }
   }
+  poisson.setDomainBC(lobc, hibc);
+  poisson.setMaxOrder(2);
+  poisson.setEnforceSingularSolvable(m_pressure_singular);
+  for (int lev = 0; lev < nlev; ++lev)
+    poisson.setLevelBC(lev, nullptr);
 
-  CellHierarchy rhat_p, search_p, image_p, intermediate_p, image_intermediate_p;
-  define_composite_like(rhat_p, p, 0);
-  define_composite_like(search_p, p, 1);
-  define_composite_like(image_p, p, 0);
-  define_composite_like(intermediate_p, p, 1);
-  define_composite_like(image_intermediate_p, p, 0);
-  std::vector<Real> rhat_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> search_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> image_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> intermediate_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> image_intermediate_ib(rhs_ib.size(), 0.0_rt);
+  MLMG pressure_mlmg(poisson);
+  pressure_mlmg.setVerbose(0);
+  pressure_mlmg.setBottomVerbose(0);
+  pressure_mlmg.setPrecondIter(m_ib_schur_mg_iters);
+  pressure_mlmg.setMaxFmgIter(0);
+  pressure_mlmg.setBottomSolver(BottomSolver::smoother);
 
-  constexpr int residual_refresh = 100;
+  CellHierarchy poisson_rhs, inverse_residual, inverse_image, inverse_delta;
+  define_composite_like(poisson_rhs, rhs_p, 0);
+  define_composite_like(inverse_residual, rhs_p, 0);
+  define_composite_like(inverse_image, rhs_p, 0);
+  define_composite_like(inverse_delta, p, 1);
+  Vector<MultiFab *> mlmg_solution(nlev);
+  Vector<const MultiFab *> mlmg_rhs(nlev);
+
+  int pressure_inverse_applications = 0;
+  int standard_poisson_applications = 0;
+  int modified_poisson_applications = 0;
+
+  const auto apply_standard_poisson_inverse = [&](const CellHierarchy &input,
+                                                  CellHierarchy &solution) {
+    ++standard_poisson_applications;
+    for (int lev = 0; lev < nlev; ++lev) {
+      solution[lev]->setVal(0.0_rt);
+      MultiFab::Copy(*poisson_rhs[lev], *input[lev], 0, 0, 1, 0);
+      poisson_rhs[lev]->mult(-1.0_rt, 0, 1, 0);
+      mlmg_solution[lev] = solution[lev].get();
+      mlmg_rhs[lev] = poisson_rhs[lev].get();
+    }
+    mask_composite(poisson_rhs, active_masks);
+    if (m_pressure_singular)
+      subtract_composite_mean(poisson_rhs, active_masks);
+
+    pressure_mlmg.precond(mlmg_solution, mlmg_rhs, 0.0_rt, 0.0_rt);
+
+    mask_composite(solution, active_masks);
+    if (m_pressure_singular)
+      subtract_composite_mean(solution, active_masks);
+  };
+
+  const auto apply_pressure_inverse = [&](const CellHierarchy &input,
+                                          CellHierarchy &solution) {
+    BL_PROFILE("INSSolver::ApplyIBPressureInverse()");
+
+    ++pressure_inverse_applications;
+    apply_standard_poisson_inverse(input, solution);
+    // A fixed correction polynomial keeps this map reproducible for BiCGStab.
+    for (int correction = 0; correction < m_ib_schur_pressure_corrections;
+         ++correction) {
+      ApplyCompositeModifiedPoissonOp(solution, inverse_image, active_masks);
+      ++modified_poisson_applications;
+      lincomb_composite(inverse_residual, 1.0_rt, input, -1.0_rt, inverse_image,
+                        active_masks);
+      if (m_pressure_singular)
+        subtract_composite_mean(inverse_residual, active_masks);
+      apply_standard_poisson_inverse(inverse_residual, inverse_delta);
+      saxpy_composite(solution, 1.0_rt, inverse_delta, active_masks);
+      if (m_pressure_singular)
+        subtract_composite_mean(solution, active_masks);
+    }
+  };
+
+  CellHierarchy zero_p, force_p, pressure_rhs, pressure_rhs_response,
+      pressure_response, pressure_image_p;
+  define_composite_like(zero_p, p, 1);
+  define_composite_like(force_p, rhs_p, 0);
+  define_composite_like(pressure_rhs, rhs_p, 0);
+  define_composite_like(pressure_rhs_response, p, 1);
+  define_composite_like(pressure_response, p, 1);
+  define_composite_like(pressure_image_p, rhs_p, 0);
+  for (auto &level : zero_p)
+    level->setVal(0.0_rt);
+
+  std::vector<Real> force_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> pressure_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> base_pressure_ib(rhs_ib.size(), 0.0_rt);
+  int schur_applications = 0;
+
+  const auto apply_force_blocks = [&](const std::vector<Real> &input_force) {
+    scaling.to_physical_force(input_force, physical_force);
+    ApplyCompositeProjectionBlocks(zero_p, &physical_force, force_p, &force_ib,
+                                   active_masks);
+  };
+
+  const auto apply_pressure_blocks = [&](CellHierarchy &input_pressure) {
+    ApplyCompositeProjectionBlocks(input_pressure, nullptr, pressure_image_p,
+                                   &pressure_ib, active_masks);
+  };
+
+  const auto apply_schur = [&](const std::vector<Real> &input_force,
+                               std::vector<Real> &result) {
+    BL_PROFILE("INSSolver::ApplyIBForceSchurOp()");
+
+    ++schur_applications;
+    apply_force_blocks(input_force);
+    // This affine form is algebraically M f - B P C f for linear P, but
+    // avoids subtracting two large pressure fields before applying B.
+    lincomb_composite(pressure_rhs, 1.0_rt, rhs_p, -1.0_rt, force_p,
+                      active_masks);
+    if (m_pressure_singular)
+      subtract_composite_mean(pressure_rhs, active_masks);
+    apply_pressure_inverse(pressure_rhs, pressure_response);
+    apply_pressure_blocks(pressure_response);
+    result.resize(input_force.size());
+    for (std::size_t i = 0; i < result.size(); ++i)
+      result[i] = force_ib[i] + pressure_ib[i] - base_pressure_ib[i];
+  };
+
+  apply_pressure_inverse(rhs_p, pressure_rhs_response);
+  apply_pressure_blocks(pressure_rhs_response);
+  base_pressure_ib = pressure_ib;
+  std::vector<Real> schur_rhs(rhs_ib.size(), 0.0_rt);
+  for (std::size_t i = 0; i < schur_rhs.size(); ++i)
+    schur_rhs[i] = rhs_ib[i] - pressure_ib[i];
+
+  const Real schur_rhs_norm2 = norm2_vector(schur_rhs);
+  const Real schur_rhs_norm =
+      std::sqrt(std::max(schur_rhs_norm2, Real(1.0e-300)));
+  const Real schur_tol2 =
+      m_poisson_tol * m_poisson_tol * std::max(schur_rhs_norm2, Real(1.0e-300));
+
+  std::vector<Real> residual(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> rhat(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> search(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> image(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> intermediate(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> image_intermediate(rhs_ib.size(), 0.0_rt);
+
+  const auto evaluate_schur_residual = [&]() {
+    apply_schur(scaled_force, image);
+    for (std::size_t i = 0; i < residual.size(); ++i)
+      residual[i] = schur_rhs[i] - image[i];
+    return norm2_vector(residual);
+  };
+
+  Real schur_resid2 = evaluate_schur_residual();
+  const Real initial_schur_resid = std::sqrt(std::max(schur_resid2, Real(0.0)));
+  std::vector<Real> best_force = scaled_force;
+  Real best_schur_resid2 = schur_resid2;
+
+  constexpr int residual_refresh = 50;
   const char *breakdown = nullptr;
   int iter = 0;
   while (iter < m_poisson_max_iter) {
-    const CoupledResidual exact_residual = evaluate_residual();
-    const Real exact_resid2 = exact_residual.norm2();
-    resid = exact_residual.norm();
-    remember_current_if_better(resid);
-    if (!std::isfinite(exact_resid2)) {
-      breakdown = "non-finite residual";
+    if (!std::isfinite(schur_resid2)) {
+      breakdown = "non-finite Schur residual";
       break;
     }
-    if (exact_resid2 <= tol2)
+    if (schur_resid2 <= schur_tol2)
       break;
 
-    copy_composite(rhat_p, rr_p, active_masks);
-    rhat_ib = rr_ib;
-    for (auto &level : search_p)
-      level->setVal(0.0);
-    for (auto &level : image_p)
-      level->setVal(0.0);
-    std::fill(search_ib.begin(), search_ib.end(), 0.0_rt);
-    std::fill(image_ib.begin(), image_ib.end(), 0.0_rt);
+    rhat = residual;
+    std::fill(search.begin(), search.end(), 0.0_rt);
+    std::fill(image.begin(), image.end(), 0.0_rt);
 
     Real rho = 1.0_rt;
     Real alpha = 1.0_rt;
@@ -730,14 +807,9 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
     bool cycle_breakdown = false;
 
     while (iter < cycle_end) {
-      const Real rho_new = dot_coupled(rhat_p, rhat_ib, rr_p, rr_ib);
-      if (!std::isfinite(rho_new)) {
-        breakdown = "non-finite rho";
-        cycle_breakdown = true;
-        break;
-      }
-      if (std::abs(rho_new) < tiny) {
-        breakdown = "rho breakdown";
+      const Real rho_new = dot_vector(rhat, residual);
+      if (!std::isfinite(rho_new) || std::abs(rho_new) < tiny) {
+        breakdown = std::isfinite(rho_new) ? "rho breakdown" : "non-finite rho";
         cycle_breakdown = true;
         break;
       }
@@ -748,20 +820,14 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
         break;
       }
 
-      lincomb_coupled(search_p, search_ib, 1.0_rt, search_p, search_ib, -omega,
-                      image_p, image_ib, active_masks);
-      lincomb_coupled(search_p, search_ib, beta, search_p, search_ib, 1.0_rt,
-                      rr_p, rr_ib, active_masks);
+      lincomb_vector(search, 1.0_rt, search, -omega, image);
+      lincomb_vector(search, beta, search, 1.0_rt, residual);
+      apply_schur(search, image);
 
-      apply_scaled_operator(search_p, search_ib, image_p, image_ib);
-      const Real rhat_image = dot_coupled(rhat_p, rhat_ib, image_p, image_ib);
-      if (!std::isfinite(rhat_image)) {
-        breakdown = "non-finite rhat-v";
-        cycle_breakdown = true;
-        break;
-      }
-      if (std::abs(rhat_image) < tiny) {
-        breakdown = "rhat-v breakdown";
+      const Real rhat_image = dot_vector(rhat, image);
+      if (!std::isfinite(rhat_image) || std::abs(rhat_image) < tiny) {
+        breakdown = std::isfinite(rhat_image) ? "rhat-v breakdown"
+                                              : "non-finite rhat-v";
         cycle_breakdown = true;
         break;
       }
@@ -772,36 +838,23 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
         break;
       }
 
-      lincomb_coupled(intermediate_p, intermediate_ib, 1.0_rt, rr_p, rr_ib,
-                      -alpha, image_p, image_ib, active_masks);
-      const Real intermediate_resid2 = dot_coupled(
-          intermediate_p, intermediate_ib, intermediate_p, intermediate_ib);
+      lincomb_vector(intermediate, 1.0_rt, residual, -alpha, image);
+      const Real intermediate_resid2 = norm2_vector(intermediate);
       if (!std::isfinite(intermediate_resid2)) {
-        breakdown = "non-finite residual";
+        breakdown = "non-finite Schur residual";
         cycle_breakdown = true;
         break;
       }
-      if (intermediate_resid2 <= tol2) {
-        saxpy_coupled(p, scaled_force, alpha, search_p, search_ib,
-                      active_masks);
+      if (intermediate_resid2 <= schur_tol2) {
+        saxpy_vector(scaled_force, alpha, search);
         ++iter;
         break;
       }
 
-      apply_scaled_operator(intermediate_p, intermediate_ib,
-                            image_intermediate_p, image_intermediate_ib);
-      const Real image_norm2 =
-          dot_coupled(image_intermediate_p, image_intermediate_ib,
-                      image_intermediate_p, image_intermediate_ib);
-      if (!std::isfinite(image_norm2)) {
-        breakdown = "non-finite t-t";
-        cycle_breakdown = true;
-        break;
-      }
+      apply_schur(intermediate, image_intermediate);
+      const Real image_norm2 = norm2_vector(image_intermediate);
       omega = (image_norm2 > tiny)
-                  ? dot_coupled(image_intermediate_p, image_intermediate_ib,
-                                intermediate_p, intermediate_ib) /
-                        image_norm2
+                  ? dot_vector(image_intermediate, intermediate) / image_norm2
                   : 0.0_rt;
       if (!std::isfinite(omega)) {
         breakdown = "non-finite omega";
@@ -809,58 +862,345 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
         break;
       }
 
-      saxpy_coupled(p, scaled_force, alpha, search_p, search_ib, active_masks);
-      saxpy_coupled(p, scaled_force, omega, intermediate_p, intermediate_ib,
-                    active_masks);
-      lincomb_coupled(rr_p, rr_ib, 1.0_rt, intermediate_p, intermediate_ib,
-                      -omega, image_intermediate_p, image_intermediate_ib,
-                      active_masks);
+      saxpy_vector(scaled_force, alpha, search);
+      saxpy_vector(scaled_force, omega, intermediate);
+      lincomb_vector(residual, 1.0_rt, intermediate, -omega,
+                     image_intermediate);
 
       rho = rho_new;
-      const Real recursive_resid2 = dot_coupled(rr_p, rr_ib, rr_p, rr_ib);
+      schur_resid2 = norm2_vector(residual);
       ++iter;
       if (std::abs(omega) < tiny) {
         breakdown = "omega breakdown";
         cycle_breakdown = true;
         break;
       }
-      if (!std::isfinite(recursive_resid2)) {
-        breakdown = "non-finite residual";
+      if (!std::isfinite(schur_resid2)) {
+        breakdown = "non-finite Schur residual";
         cycle_breakdown = true;
         break;
       }
-      if (recursive_resid2 <= tol2)
+      if (schur_resid2 <= schur_tol2)
         break;
     }
 
+    schur_resid2 = evaluate_schur_residual();
+    if (std::isfinite(schur_resid2) && schur_resid2 < best_schur_resid2) {
+      best_schur_resid2 = schur_resid2;
+      best_force = scaled_force;
+    }
     if (cycle_breakdown)
       break;
   }
 
-  if (m_pressure_singular)
-    subtract_composite_mean(p, active_masks);
-
-  resid = evaluate_residual().norm();
-  remember_current_if_better(resid);
-
-  if (std::isfinite(best_resid) &&
-      (!std::isfinite(resid) || best_resid < resid)) {
-    copy_composite_unmasked(p, best_p);
-    scaled_force = best_ib;
-    if (m_pressure_singular)
-      subtract_composite_mean(p, active_masks);
-    resid = evaluate_residual().norm();
+  if (std::isfinite(best_schur_resid2) &&
+      (!std::isfinite(schur_resid2) || best_schur_resid2 < schur_resid2)) {
+    scaled_force = best_force;
+    schur_resid2 = evaluate_schur_residual();
   }
 
-  const bool converged = std::isfinite(resid) && resid <= tol;
-
+  apply_force_blocks(scaled_force);
+  lincomb_composite(pressure_rhs, 1.0_rt, rhs_p, -1.0_rt, force_p,
+                    active_masks);
+  if (m_pressure_singular)
+    subtract_composite_mean(pressure_rhs, active_masks);
+  apply_pressure_inverse(pressure_rhs, p);
+  const Real pressure_rhs_norm = std::sqrt(
+      std::max(dot_composite(pressure_rhs, pressure_rhs), Real(1.0e-300)));
+  const Real max_pressure_row = *std::max_element(scaling.pressure_rows.begin(),
+                                                  scaling.pressure_rows.end());
+  const Real pressure_recovery_tol =
+      std::min(m_poisson_tol,
+               0.25_rt * coupled_tol / (max_pressure_row * pressure_rhs_norm));
+  if (m_verbose > 2) {
+    ApplyCompositeModifiedPoissonOp(p, inverse_image, active_masks);
+    lincomb_composite(inverse_residual, 1.0_rt, pressure_rhs, -1.0_rt,
+                      inverse_image, active_masks);
+    Print() << "    approximate pressure residual = "
+            << std::sqrt(dot_composite(inverse_residual, inverse_residual) /
+                         std::max(dot_composite(pressure_rhs, pressure_rhs),
+                                  Real(1.0e-300)))
+            << "\n";
+  }
+  const int pressure_recovery_iters = SolveCompositeModifiedPoisson(
+      p, pressure_rhs, active_masks, pressure_recovery_tol);
+  if (m_verbose > 2) {
+    ApplyCompositeModifiedPoissonOp(p, inverse_image, active_masks);
+    lincomb_composite(inverse_residual, 1.0_rt, pressure_rhs, -1.0_rt,
+                      inverse_image, active_masks);
+    Print() << "    recovered pressure residual = "
+            << std::sqrt(dot_composite(inverse_residual, inverse_residual) /
+                         std::max(dot_composite(pressure_rhs, pressure_rhs),
+                                  Real(1.0e-300)))
+            << "\n";
+  }
   scaling.to_physical_force(scaled_force, m_ib_force);
-  scaling.unscale_pressure(rr_p);
-  const CoupledResidual final_residual{dot_composite(rr_p, rr_p),
-                                       norm2_vector(rr_ib)};
+
+  CellHierarchy coupled_image_p, coupled_residual_p, scaled_residual_p;
+  define_composite_like(coupled_image_p, rhs_p, 0);
+  define_composite_like(coupled_residual_p, rhs_p, 0);
+  define_composite_like(scaled_residual_p, rhs_p, 0);
+  std::vector<Real> coupled_image_ib(rhs_ib.size(), 0.0_rt);
+  std::vector<Real> coupled_residual_ib(rhs_ib.size(), 0.0_rt);
+
+  Real coupled_resid = std::numeric_limits<Real>::infinity();
+  const auto evaluate_physical_coupled_residual = [&]() {
+    scaling.to_physical_force(scaled_force, m_ib_force);
+    ApplyCompositeIBProjectionOp(p, m_ib_force, coupled_image_p,
+                                 coupled_image_ib, active_masks);
+    lincomb_composite(coupled_residual_p, 1.0_rt, rhs_p, -1.0_rt,
+                      coupled_image_p, active_masks);
+    for (std::size_t i = 0; i < coupled_residual_ib.size(); ++i)
+      coupled_residual_ib[i] = rhs_ib[i] - coupled_image_ib[i];
+
+    copy_composite(scaled_residual_p, coupled_residual_p, active_masks);
+    scaling.scale_pressure(scaled_residual_p);
+    CoupledResidual result{
+        dot_composite(coupled_residual_p, coupled_residual_p),
+        norm2_vector(coupled_residual_ib)};
+    coupled_resid = std::sqrt(std::max(
+        dot_composite(scaled_residual_p, scaled_residual_p) + result.ib_norm2,
+        Real(0.0)));
+    return result;
+  };
+
+  CoupledResidual final_residual = evaluate_physical_coupled_residual();
+  const Real post_schur_coupled_resid = coupled_resid;
+  if (coupled_resid > 10.0_rt * coupled_tol) {
+    copy_composite_unmasked(p, initial_p);
+    scaled_force = initial_scaled_force;
+    final_residual = evaluate_physical_coupled_residual();
+    if (!m_pressure_singular) {
+      CellHierarchy saved_initial_p;
+      define_composite_like(saved_initial_p, p, 1);
+      copy_composite_unmasked(saved_initial_p, p);
+      const Real initial_resid = coupled_resid;
+
+      apply_force_blocks(scaled_force);
+      lincomb_composite(pressure_rhs, 1.0_rt, rhs_p, -1.0_rt, force_p,
+                        active_masks);
+      BuildCompositePoissonInitialGuess(p, pressure_rhs, active_masks);
+      final_residual = evaluate_physical_coupled_residual();
+      if (!std::isfinite(coupled_resid) || coupled_resid >= initial_resid) {
+        copy_composite_unmasked(p, saved_initial_p);
+        final_residual = evaluate_physical_coupled_residual();
+      }
+    }
+  }
+  const Real refinement_initial_resid = coupled_resid;
+  Real refinement_resid = coupled_resid;
+  const char *refinement_breakdown = nullptr;
+  int refinement_iters = 0;
+
+  if (!std::isfinite(coupled_resid) || coupled_resid > coupled_tol) {
+    CellHierarchy refinement_rhat, refinement_search, refinement_image,
+        refinement_intermediate, refinement_intermediate_image;
+    define_composite_like(refinement_rhat, p, 0);
+    define_composite_like(refinement_search, p, 1);
+    define_composite_like(refinement_image, p, 0);
+    define_composite_like(refinement_intermediate, p, 1);
+    define_composite_like(refinement_intermediate_image, p, 0);
+    std::vector<Real> refinement_rhat_ib(rhs_ib.size(), 0.0_rt);
+    std::vector<Real> refinement_search_ib(rhs_ib.size(), 0.0_rt);
+    std::vector<Real> refinement_image_ib(rhs_ib.size(), 0.0_rt);
+    std::vector<Real> refinement_intermediate_ib(rhs_ib.size(), 0.0_rt);
+    std::vector<Real> refinement_intermediate_image_ib(rhs_ib.size(), 0.0_rt);
+
+    const auto apply_scaled_coupled =
+        [&](CellHierarchy &input_p, const std::vector<Real> &input_force,
+            CellHierarchy &result_p, std::vector<Real> &result_ib) {
+          scaling.to_physical_force(input_force, physical_force);
+          ApplyCompositeIBProjectionOp(input_p, physical_force, result_p,
+                                       result_ib, active_masks);
+          scaling.scale_pressure(result_p);
+        };
+
+    const auto evaluate_scaled_coupled_residual = [&]() {
+      apply_scaled_coupled(p, scaled_force, coupled_image_p, coupled_image_ib);
+      lincomb_composite(scaled_residual_p, 1.0_rt, scaled_rhs_p, -1.0_rt,
+                        coupled_image_p, active_masks);
+      for (std::size_t i = 0; i < coupled_residual_ib.size(); ++i)
+        coupled_residual_ib[i] = rhs_ib[i] - coupled_image_ib[i];
+      return std::sqrt(
+          std::max(dot_composite(scaled_residual_p, scaled_residual_p) +
+                       norm2_vector(coupled_residual_ib),
+                   Real(0.0)));
+    };
+
+    refinement_resid = evaluate_scaled_coupled_residual();
+    CellHierarchy best_refinement_p;
+    define_composite_like(best_refinement_p, p, 1);
+    copy_composite_unmasked(best_refinement_p, p);
+    std::vector<Real> best_refinement_force = scaled_force;
+    Real best_refinement_resid = refinement_resid;
+
+    constexpr int coupled_residual_refresh = 100;
+    while (refinement_iters < m_poisson_max_iter) {
+      if (!std::isfinite(refinement_resid)) {
+        refinement_breakdown = "non-finite coupled residual";
+        break;
+      }
+      if (refinement_resid <= coupled_tol)
+        break;
+
+      copy_composite(refinement_rhat, scaled_residual_p, active_masks);
+      refinement_rhat_ib = coupled_residual_ib;
+      for (auto &level : refinement_search)
+        level->setVal(0.0_rt);
+      for (auto &level : refinement_image)
+        level->setVal(0.0_rt);
+      std::fill(refinement_search_ib.begin(), refinement_search_ib.end(),
+                0.0_rt);
+      std::fill(refinement_image_ib.begin(), refinement_image_ib.end(), 0.0_rt);
+
+      Real rho = 1.0_rt;
+      Real alpha = 1.0_rt;
+      Real omega = 1.0_rt;
+      const int cycle_end = std::min(
+          refinement_iters + coupled_residual_refresh, m_poisson_max_iter);
+      bool cycle_breakdown = false;
+
+      while (refinement_iters < cycle_end) {
+        const Real rho_new =
+            dot_coupled(refinement_rhat, refinement_rhat_ib, scaled_residual_p,
+                        coupled_residual_ib);
+        if (!std::isfinite(rho_new) || std::abs(rho_new) < tiny) {
+          refinement_breakdown =
+              std::isfinite(rho_new) ? "rho breakdown" : "non-finite rho";
+          cycle_breakdown = true;
+          break;
+        }
+        const Real beta = (rho_new / rho) * (alpha / omega);
+        if (!std::isfinite(beta)) {
+          refinement_breakdown = "non-finite beta";
+          cycle_breakdown = true;
+          break;
+        }
+
+        lincomb_coupled(refinement_search, refinement_search_ib, 1.0_rt,
+                        refinement_search, refinement_search_ib, -omega,
+                        refinement_image, refinement_image_ib, active_masks);
+        lincomb_coupled(refinement_search, refinement_search_ib, beta,
+                        refinement_search, refinement_search_ib, 1.0_rt,
+                        scaled_residual_p, coupled_residual_ib, active_masks);
+
+        apply_scaled_coupled(refinement_search, refinement_search_ib,
+                             refinement_image, refinement_image_ib);
+        const Real rhat_image =
+            dot_coupled(refinement_rhat, refinement_rhat_ib, refinement_image,
+                        refinement_image_ib);
+        if (!std::isfinite(rhat_image) || std::abs(rhat_image) < tiny) {
+          refinement_breakdown = std::isfinite(rhat_image)
+                                     ? "rhat-v breakdown"
+                                     : "non-finite rhat-v";
+          cycle_breakdown = true;
+          break;
+        }
+        alpha = rho_new / rhat_image;
+
+        lincomb_coupled(refinement_intermediate, refinement_intermediate_ib,
+                        1.0_rt, scaled_residual_p, coupled_residual_ib, -alpha,
+                        refinement_image, refinement_image_ib, active_masks);
+        const Real intermediate_resid2 =
+            dot_coupled(refinement_intermediate, refinement_intermediate_ib,
+                        refinement_intermediate, refinement_intermediate_ib);
+        if (intermediate_resid2 <= coupled_tol * coupled_tol) {
+          saxpy_coupled(p, scaled_force, alpha, refinement_search,
+                        refinement_search_ib, active_masks);
+          ++refinement_iters;
+          break;
+        }
+
+        apply_scaled_coupled(
+            refinement_intermediate, refinement_intermediate_ib,
+            refinement_intermediate_image, refinement_intermediate_image_ib);
+        const Real image_norm2 = dot_coupled(
+            refinement_intermediate_image, refinement_intermediate_image_ib,
+            refinement_intermediate_image, refinement_intermediate_image_ib);
+        omega = (image_norm2 > tiny)
+                    ? dot_coupled(refinement_intermediate_image,
+                                  refinement_intermediate_image_ib,
+                                  refinement_intermediate,
+                                  refinement_intermediate_ib) /
+                          image_norm2
+                    : 0.0_rt;
+        if (!std::isfinite(omega)) {
+          refinement_breakdown = "non-finite omega";
+          cycle_breakdown = true;
+          break;
+        }
+
+        saxpy_coupled(p, scaled_force, alpha, refinement_search,
+                      refinement_search_ib, active_masks);
+        saxpy_coupled(p, scaled_force, omega, refinement_intermediate,
+                      refinement_intermediate_ib, active_masks);
+        lincomb_coupled(scaled_residual_p, coupled_residual_ib, 1.0_rt,
+                        refinement_intermediate, refinement_intermediate_ib,
+                        -omega, refinement_intermediate_image,
+                        refinement_intermediate_image_ib, active_masks);
+
+        rho = rho_new;
+        ++refinement_iters;
+        if (std::abs(omega) < tiny) {
+          refinement_breakdown = "omega breakdown";
+          cycle_breakdown = true;
+          break;
+        }
+        const Real recursive_resid2 =
+            dot_coupled(scaled_residual_p, coupled_residual_ib,
+                        scaled_residual_p, coupled_residual_ib);
+        if (!std::isfinite(recursive_resid2)) {
+          refinement_breakdown = "non-finite coupled residual";
+          cycle_breakdown = true;
+          break;
+        }
+        if (recursive_resid2 <= coupled_tol * coupled_tol)
+          break;
+      }
+
+      refinement_resid = evaluate_scaled_coupled_residual();
+      if (std::isfinite(refinement_resid) &&
+          refinement_resid < best_refinement_resid) {
+        best_refinement_resid = refinement_resid;
+        copy_composite_unmasked(best_refinement_p, p);
+        best_refinement_force = scaled_force;
+      }
+      if (cycle_breakdown)
+        break;
+    }
+
+    if (std::isfinite(best_refinement_resid) &&
+        (!std::isfinite(refinement_resid) ||
+         best_refinement_resid < refinement_resid)) {
+      copy_composite_unmasked(p, best_refinement_p);
+      scaled_force = best_refinement_force;
+      refinement_resid = evaluate_scaled_coupled_residual();
+    }
+    if (m_pressure_singular)
+      subtract_composite_mean(p, active_masks);
+    final_residual = evaluate_physical_coupled_residual();
+  }
+
+  const bool converged =
+      std::isfinite(coupled_resid) && coupled_resid <= coupled_tol;
+
+  const Real schur_resid = std::sqrt(std::max(schur_resid2, Real(0.0)));
+  const Real schur_relres = schur_resid / schur_rhs_norm;
+  const Real average_rate =
+      (iter > 0 && initial_schur_resid > 0.0_rt && std::isfinite(schur_resid))
+          ? std::pow(schur_resid / initial_schur_resid,
+                     1.0_rt / static_cast<Real>(iter))
+          : 0.0_rt;
+  const Real refinement_rate =
+      (refinement_iters > 0 && refinement_initial_resid > 0.0_rt &&
+       std::isfinite(coupled_resid))
+          ? std::pow(coupled_resid / refinement_initial_resid,
+                     1.0_rt / static_cast<Real>(refinement_iters))
+          : 0.0_rt;
+  const Real scaled_relres = coupled_resid / rhs_norm;
+  const Real post_schur_scaled_relres = post_schur_coupled_resid / rhs_norm;
 
   if (!converged) {
-    const Real scaled_relres = resid / rhs_norm;
     const Real abs_p =
         std::sqrt(std::max(final_residual.pressure_norm2, Real(0.0)));
     const Real abs_ib = std::sqrt(std::max(final_residual.ib_norm2, Real(0.0)));
@@ -873,32 +1213,56 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
             : (abs_ib == Real(0.0) ? Real(0.0)
                                    : std::numeric_limits<Real>::infinity());
     std::ostringstream msg;
-    msg << "Composite IB projection solve";
-    if (breakdown != nullptr) {
+    msg << "Composite IB force-Schur solve";
+    if (refinement_breakdown != nullptr) {
+      msg << " coupled refinement stopped by " << refinement_breakdown;
+    } else if (refinement_iters >= m_poisson_max_iter) {
+      msg << " coupled refinement reached max_iter";
+    } else if (breakdown != nullptr) {
       msg << " stopped by " << breakdown;
     } else if (iter >= m_poisson_max_iter) {
       msg << " reached max_iter";
     } else {
-      msg << " failed to converge";
+      msg << " failed the true coupled-residual check";
     }
-    msg << "; the coupled IB system may be singular, rank deficient, or "
-           "ill-conditioned"
-        << " (levels = " << finest_level + 1
+    msg << " (levels = " << finest_level + 1
         << ", finest_level = " << finest_level
         << ", markers = " << m_ib_geometry.markers.size()
         << ", constraints = " << rhs_ib.size()
         << ", pressure_singular = " << m_pressure_singular
+        << ", Schur_relres = " << schur_relres
+        << ", Schur_average_rate = " << average_rate
+        << ", refinement_iters = " << refinement_iters
+        << ", refinement_average_rate = " << refinement_rate
         << ", scaled_relres = " << scaled_relres
         << ", pressure_relres = " << relres_p << ", ib_relres = " << relres_ib
         << ", |r_p| = " << abs_p << ", |rhs_p| = " << rhs_p_norm
-        << ", |r_ib| = " << abs_ib << ", |rhs_ib| = " << rhs_ib_norm << ").";
+        << ", |r_ib| = " << abs_ib << ", |rhs_ib| = " << rhs_ib_norm
+        << ", pressure_MLMG_iters = " << m_ib_schur_mg_iters
+        << ", pressure_corrections = " << m_ib_schur_pressure_corrections
+        << ").";
     amrex::Warning(msg.str());
   }
 
   if (m_verbose > 1) {
-    const Real scaled_relres = resid / rhs_norm;
-    Print() << "  Composite IB BiCGStab: " << iter
-            << " iters, scaled |r|/|rhs| = " << scaled_relres << "\n";
+    Print() << "  Composite IB force-Schur BiCGStab: " << iter
+            << " iters, Schur |r|/|rhs| = " << schur_relres
+            << ", avg factor/iter = " << average_rate
+            << ", post-Schur true scaled |r|/|rhs| = "
+            << post_schur_scaled_relres << "\n"
+            << "    pressure inverse: " << pressure_inverse_applications
+            << " applies, " << standard_poisson_applications
+            << " standard-Poisson applications, "
+            << modified_poisson_applications
+            << " modified-op corrections; Schur applies = "
+            << schur_applications
+            << ", exact pressure recovery iters = " << pressure_recovery_iters
+            << " at reltol " << pressure_recovery_tol << "\n";
+    if (refinement_iters > 0) {
+      Print() << "    exact coupled refinement: " << refinement_iters
+              << " iters, avg factor/iter = " << refinement_rate
+              << ", scaled |r|/|rhs| = " << scaled_relres << "\n";
+    }
   }
   return iter;
 }

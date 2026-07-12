@@ -31,13 +31,14 @@ the Lagrangian coupling attached only to the finest AMR level.
   `IBGeometry` owns host/device points, elements, and element-centroid
   markers using AMReX `GpuArray` records; marker weights are line length
   in 2D or triangle area in 3D.
-- The coupled AMR IB projection solves a composite hierarchy system
-  `[-D; E] B^N [G H] [p; f]` with in-repo BiCGStab.  Non-singular
-  systems use a checked AMReX Poisson pressure-block initial guess;
-  singular systems use the previous pressure/force state directly as the
-  warm start.  The Krylov representation uses level pressure-row factors
-  `h_l` and marker force-column factors `h_f^(d-1)/w_k`; stored forces and
-  reported block residuals remain physical.  `H` spreads force components to matching MAC
+- The coupled AMR IB projection eliminates pressure from
+  `[-D; E] B^N [G H] [p; f]` and solves the resulting marker-space force
+  Schur equation with fixed-work in-repo BiCGStab.  The approximate pressure
+  inverse combines MLMG preconditioner cycles with modified-Poisson defect
+  corrections; pressure recovery and final acceptance use the exact operator
+  and full coupled residual.  The Krylov representation uses marker
+  force-column factors `h_f^(d-1)/w_k`; stored forces and reported block
+  residuals remain physical.  `H` spreads force components to matching MAC
   faces only on the finest level and `E` interpolates finest-level face
   corrections with marker-centred finite-support kernels, owner masks,
   and atomics to avoid double-counting shared patch faces.
@@ -59,15 +60,18 @@ sign-convention bug that ate ~30 minutes during the rewrite.
 **What changed on 2026-05-20**: the first IB pass added geometry loading
 with device copies, element-centroid markers in `IBGeometry`, Peskin
 4-point spread/interp, GPU-ready finest-level IB tagging, and the
-coupled projection in `ProjectPerot`.  The matrix-free force-Schur
-Tpetra/Belos wrapper, MLMG-based pressure inverse, and marker-block
-preconditioner are still future work; the initial path uses scaled in-repo
-BiCGStab so the operator is executable immediately.
+coupled projection in `ProjectPerot`.
+
+**What changed on 2026-07-11**: the main coupled path now eliminates pressure
+and solves the matrix-free force Schur equation with in-repo BiCGStab.  It uses
+a fixed MLMG/modified-Poisson approximate pressure inverse, exact pressure
+recovery, and a true full-coupled residual check.  The Tpetra/Belos wrapper and
+marker-block preconditioner remain future work.
 
 **How to apply:** keep the Perot `B^N` consistency across predictor,
 coupled projection operator, and projection.  IB rows and force columns belong
 on the finest level only, while pressure unknowns and active equations span
 the hierarchy.  Trilinos remains out of the build until the Tpetra wrapper is
 actually implemented.  Do not restore the removed alternating block cleanup;
-implement the settled marker-space `M - B A^-1 C` strategy in
+extend the implemented marker-space `M - B A^-1 C` strategy according to
 `project_ib_matrixfree_plan.md`.

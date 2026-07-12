@@ -2,9 +2,9 @@
 # inputs.ib_cylinder_channel — channel flow past a stationary cylinder
 #
 # This is a more geometric IB smoke case built from tests/3d/channel.
-# The in-repo coupled BiCGStab has no in-iteration IB block preconditioner,
-# so this case deliberately uses an IB panel size near 1.5 * dx instead
-# of a finer body mesh.
+# This remains a conditioning stress case for the approximate pressure inverse
+# and deliberately uses an IB panel size near 1.5 * dx instead of a finer body
+# mesh.
 #
 # Geometry:
 #   cylinder center  = (1.0, 0.5), z-axis
@@ -14,10 +14,12 @@
 #   fluid dx         = 1/16 = 0.0625
 #   IB panel sizes   = chord 0.09567, axial 0.08333
 #
-# Expected one-step smoke output with ins.verbose=2:
-#   Composite IB BiCGStab: O(100-300) iters at about 1e-4 relative residual
-#   |E u - U_ib|_inf = O(1e-3)
-#   |div u|_inf      = O(1e-4)
+# Expected one-step behavior with ins.verbose=2:
+#   force-Schur BiCGStab: 254 iters at about 9.4e-5 Schur relative residual
+#   post-Schur true coupled relative residual: about 8.6e-3
+# The checked 1000-iteration cap is intentionally insufficient for the exact
+# fallback.  With ins.poisson_max_iter=4000, that fallback takes 2657
+# iterations and reaches about 9.7e-5 true coupled relative residual.
 #
 # Regenerate the STL with:
 #   python3 tests/3d/ib_cylinder_channel/generate_cylinder_stl.py

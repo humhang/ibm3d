@@ -59,7 +59,44 @@ Code: `ComputeTG2DError` + the tg2d branch in `InitFlowField` +
 the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
 `Advance` (`m_advect_old`, `m_ab2_valid`).
 
-**IB smoke tests (scaled coupled BiCGStab, rerun 2026-07-11):**
+**IB force-Schur tests (fixed pressure work, 2026-07-11):**
+
+- `tests/2d/ib_square/inputs.ib_square` converges in one marker iteration.
+  The Schur average factor is about `1.6e-14`; the true scaled coupled
+  residual is `8.7e-15`, marker slip is `1.2e-15`, and
+  `|div u|_inf = 1.1e-15`.
+- `tests/2d/ib_square_amr/inputs.ib_square_amr` converges in one marker
+  iteration.  A two-rank run gives a Schur average factor of `1.9e-11`, a
+  true scaled coupled residual of `1.9e-11`, marker slip `1.9e-12`, and
+  `|div u|_inf = 4.5e-12`.
+- `tests/3d/ib_plane/inputs.ib_plane` and
+  `tests/3d/ib_plane_amr/inputs.ib_plane_amr` both converge in four marker
+  iterations.  Their true scaled coupled residuals are `1.8e-15` and
+  `6.5e-15`; marker slip and divergence are at roundoff.
+- `tests/2d/ib_cylinder_re100_coarse/inputs.ib_cylinder_re100_coarse`
+  converges in five marker iterations with average factor `0.080`, true
+  scaled residual `1.3e-6`, marker slip `4.9e-6`, and
+  `|div u|_inf = 3.5e-6` for the requested `1e-5` tolerance.
+- `tests/2d/ib_cylinder_re100/inputs.ib_cylinder_re100` converges on its
+  first step in seven marker iterations with average factor `0.189`, true
+  scaled residual `5.0e-6`, marker slip `1.5e-5`, and
+  `|div u|_inf = 3.4e-6`.  A three-step run takes 7, 13, and 13 marker
+  iterations; the last two divergence norms are about `9e-9`.
+- `tests/3d/ib_cylinder_channel/inputs.ib_cylinder_channel` exposes the
+  remaining pressure-inverse weakness.  Its 254 marker iterations reach a
+  Schur relative residual of `9.4e-5` at average factor `0.964`, but the
+  independent true scaled residual is `8.6e-3`.  With
+  `ins.poisson_max_iter=4000`, the exact coupled fallback then takes 2657
+  iterations and reaches `9.7e-5`; the checked default cap of 1000 remains an
+  intentional failure.  Do not use the approximate Schur residual alone for
+  acceptance.
+
+The fixed pressure inverse uses two MLMG preconditioner cycles and 16
+modified-Poisson defect corrections by default.  BiCGStab requires these
+counts to stay fixed during one solve.  The independent full coupled residual
+is the final convergence criterion.
+
+**Historical IB baseline (scaled full coupled BiCGStab, rerun 2026-07-11):**
 
 - `tests/3d/ib_plane/inputs.ib_plane` — single-level two-triangle STL
   plane in the Taylor–Green field.  One step converges in 125 iterations

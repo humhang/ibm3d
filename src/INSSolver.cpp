@@ -71,6 +71,8 @@ void INSSolver::ReadParameters() {
   pp.query("refine_vort", m_refine_vort);
   pp.query("poisson_tol", m_poisson_tol);
   pp.query("poisson_max_iter", m_poisson_max_iter);
+  pp.query("ib_schur_mg_iters", m_ib_schur_mg_iters);
+  pp.query("ib_schur_pressure_corrections", m_ib_schur_pressure_corrections);
   pp.query("check_pressure_pin", m_check_pressure_pin);
   pp.query("verbose", m_verbose);
   pp.query("plot_prefix", m_plot_prefix);
@@ -93,6 +95,13 @@ void INSSolver::ReadParameters() {
   }
   if (!m_ib_geometry_file.empty())
     m_ib_enabled = true;
+
+  AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+      m_ib_schur_mg_iters > 0,
+      "ins.ib_schur_mg_iters must be greater than zero");
+  AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+      m_ib_schur_pressure_corrections >= 0,
+      "ins.ib_schur_pressure_corrections must be non-negative");
 }
 
 // ============================================================

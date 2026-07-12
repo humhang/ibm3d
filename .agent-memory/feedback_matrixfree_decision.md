@@ -4,10 +4,10 @@ description: Records a settled architectural decision after a multi-turn back-an
 type: feedback
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-**Rule**: when replacing the current hand-rolled coupled BiCGStab solver,
-implement the pressure-eliminated marker operator
-`S_f = M - B A^-1 C` matrix-free and solve it with Belos FGMRES.  Use an
-AMReX MLMG-based approximate composite pressure inverse and a local marker
+**Rule**: retain the pressure-eliminated marker operator
+`S_f = M - B A^-1 C` matrix-free.  The current transitional implementation
+uses fixed-work in-repo BiCGStab; the scalable version should use Belos FGMRES,
+an AMReX MLMG-based approximate composite pressure inverse, and a local marker
 preconditioner.  Do **not** assemble a `Tpetra::CrsMatrix` and hand it to AMG.
 
 **Why**: settled with the user during the 2026-05-14 conversation

@@ -8,11 +8,10 @@ Guidelines for any agent (human or AI) contributing to **ibm3d**.
 pure incompressible Navier–Stokes substrate is working, and the initial
 Taira–Colonius IB path now loads geometry, builds element-centroid
 markers, and solves the coupled projection for prescribed IB velocity.
-The settled longer-term linear-algebra direction is a matrix-free marker-space
-force Schur solve with Belos FGMRES, an AMReX `MLMG`-based approximate
-composite pressure inverse, and a local marker-block preconditioner.  The
-current executable coupled AMR path uses scaled in-repo BiCGStab with checked
-AMReX pressure-block warm starts for non-singular systems.
+The executable IB path now uses a matrix-free marker-space force Schur solve
+with in-repo BiCGStab and a fixed AMReX `MLMG`/modified-Poisson approximate
+pressure inverse.  The longer-term linear-algebra direction remains Belos
+FGMRES with a local/overlapping marker-block preconditioner.
 
 Key decisions already settled, do not re-litigate:
 
@@ -24,29 +23,25 @@ Key decisions already settled, do not re-litigate:
   `(D B^N G) p^{n+1} = (1/dt) D u*`, projection
   `u^{n+1} = u* − dt B^N G p^{n+1}`.  `m_pressure` is solved for
   directly each step — there is no incremental form.
-- **Modified-Poisson solve is matrix-free**.  Pressure-only and coupled
-  AMR IB solves use hand-rolled BiCGStab on the composite hierarchy
-  operator.  The current IB rows attach to this
-  same operator as `[-D; E] B^N [G H]`; a Tpetra::Operator wrapper
-  remains the intended scalable linear-algebra interface.  For
-  non-singular systems, AMReX's composite Poisson solve supplies a
-  checked pressure-block initial guess; convergence is always judged
-  with the matrix-free modified operator.
-- **Coupled scaling and future solve**: the current IB Krylov system scales
-  pressure rows by each level's geometric-mean spacing `h_l` and uses
+- **Modified-Poisson and IB solves are matrix-free**.  Pressure-only solves
+  use hand-rolled BiCGStab on the composite hierarchy operator.  IB solves
+  eliminate pressure and apply `S_f = M - B A^-1 C` in marker space, with
+  `A^-1` approximated by fixed MLMG V-cycles plus fixed modified-operator
+  defect corrections.  The original `[-D; E] B^N [G H]` residual always
+  controls acceptance.  A Tpetra/Belos wrapper remains the intended scalable
+  interface.
+- **Coupled scaling and Schur caveat**: the IB solve scales
+  pressure diagnostics by each level's geometric-mean spacing `h_l` and uses
   `f_k = h_f^(d-1)/w_k * fhat_k` for a marker with quadrature weight `w_k`.
   Stored forces and block diagnostics remain physical.  Do not restore the
   removed alternating force/pressure subiterations or pressure-only cleanup.
-  Scaling is not preconditioning: the current coupled solve can still require
-  hundreds to thousands of hierarchy operator applications, and the 3D
-  cylinder channel exceeds its default 1000-iteration cap.  Do not hide this
-  by loosening acceptance or using only the pressure-dominated residual.
-  BiCGStab iteration counts are also MPI-decomposition sensitive because
-  global reduction order perturbs the recurrence; compare final true residual,
-  marker slip, and divergence rather than requiring identical iteration counts.
-  The future solver eliminates pressure and applies
-  `S_f = M - B A^-1 C` matrix-free in marker space; see
-  `.agent-memory/project_ib_matrixfree_plan.md`.
+  The one-time exact pressure recovery and conditional full coupled Krylov
+  refinement are part of residual verification, not alternating cleanup.
+  The approximate Schur path accelerates the 2D cylinders and small plane/
+  square cases, but the dense 3D cylinder channel still fails the recovered
+  true residual and falls back to the old 2657-iteration coupled behavior.
+  Do not hide this by loosening acceptance or reporting only the Schur
+  residual.  See `.agent-memory/project_ib_matrixfree_plan.md`.
 - **IB discretisation (current first pass)**: one Lagrangian marker at
   each line-segment/triangle centroid, element length/area as the
   quadrature weight, Peskin 4-point delta, component-wise MAC spreading
@@ -142,7 +137,7 @@ From the command palette: **`task: spawn`** → pick:
 
 The configure tasks pass `-DAMReX_DIR=/Users/hang/opt/amrex-26.01/install/lib/cmake/AMReX`.
 Trilinos is **not** currently a dependency; when implementing the planned
-Tpetra/Belos force-Schur path, restore
+Tpetra/Belos force-Schur wrapper, restore
 `find_package(Trilinos REQUIRED COMPONENTS Tpetra Belos Ifpack2
 Teuchos)` in the top-level `CMakeLists.txt` and re-add
 `-DTrilinos_DIR=/Users/hang/opt/trilinos-17.0.0/install/lib/cmake/Trilinos`
@@ -200,8 +195,7 @@ toward Poiseuille.
   by reading AMReX docs is too obvious to comment.
 - Don't introduce new third-party deps without discussion.  AMReX + MPI
   is the current dependency surface; Trilinos returns when the
-  Tpetra/Belos force-Schur wrapper replaces the hand-rolled coupled
-  BiCGStab path.
+  Tpetra/Belos wrapper replaces the transitional in-repo Schur BiCGStab path.
 - Match the AMReX style of the surrounding code (`amrex::Real`,
   `amrex::Box`, `MFIter`, `ParallelFor`, etc.) rather than mixing in
   raw STL/MPI primitives.

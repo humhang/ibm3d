@@ -59,23 +59,38 @@ over-constrained coarse-grid marker system.  The current implementation
 uses one marker per immersed element centroid, with element length/area
 as its quadrature weight.
 
-The coupled hierarchy is solved with matrix-free BiCGStab using the previous
-state as the singular-system warm start, checked AMReX pressure-block warm
-starts for non-singular systems, periodic true-residual replacement, and
-best-iterate rollback.  The Krylov system scales pressure rows by the
-geometric-mean cell spacing on each level and uses the marker unknown
-`f_k = h_f^(d-1)/w_k * fhat_k`, while stored forces and residual diagnostics
-remain in physical units.  This balances the extra derivative in the pressure
-rows against the quadrature-weighted spread block.  There are no post-solve
-alternating force/pressure subiterations or pressure-only cleanup.
+The coupled hierarchy is reduced to the marker-space force Schur equation
 
-This scaling is equilibration, not a preconditioner.  The current solver still
-requires roughly hundreds of iterations for the small IB smoke cases and can
-require thousands for denser or non-singular geometries.  In particular, the
-3D cylinder channel exceeds its checked-in 1000-iteration limit and converges
-in about 2657 iterations when the limit is raised to 4000.  When `rhs_ib=0`,
-the diagnostic `ib_relres` is infinite for any nonzero marker residual; use
-the scaled coupled residual and absolute marker residual/slip together.
+```
+(M - B A^-1 C) f = r_ib - B A^-1 r_p,
+```
+
+and solved matrix-free with BiCGStab.  Here `A = -D B^N G`, while `C`, `B`,
+and `M` are the pressure/marker blocks of the same hierarchy operator.  Each
+pressure inverse starts from zero and applies a fixed number of AMReX MLMG
+standard-Poisson V-cycles followed by a fixed polynomial of modified-Poisson
+defect corrections.  Fixed work is required because BiCGStab assumes a
+reproducible linear operator.  Pressure is then recovered once from
+`A p = r_p - C f`.  The original full coupled residual, not the approximate
+Schur residual, controls acceptance.
+
+The marker unknown retains the scaling
+`f_k = h_f^(d-1)/w_k * fhat_k`; stored forces and physical diagnostics remain
+unscaled.  `ins.ib_schur_mg_iters` (default `2`) and
+`ins.ib_schur_pressure_corrections` (default `16`) control the fixed pressure
+work.  If the recovered solution fails the true coupled check, an exact
+coupled BiCGStab refinement is attempted.  This is a Krylov fallback, not the
+removed alternating pressure/force cleanup.
+
+The Schur path reduces the one-step 2D AMR cylinder stress case from a failed
+4000 coupled iterations to 7 marker iterations at a true scaled residual near
+`5e-6`.  The small 2D square cases take one marker iteration, and the 3D plane
+cases take four.  The dense 3D cylinder channel remains a limitation: its
+approximate Schur solve takes 254 marker iterations but fails the true coupled
+check, so the fallback still needs the previously recorded 2657 coupled
+iterations with `ins.poisson_max_iter=4000`.  When `rhs_ib=0`, `ib_relres` is
+infinite for any nonzero marker residual; use the scaled coupled residual and
+absolute marker residual/slip together.
 
 Why the modified Poisson `D B^N G` and not the standard `∇²` of a
 Chorin projection?  Perot 1997 shows that the exact block-LU
@@ -85,9 +100,10 @@ by the same `B^N` you used in the predictor and the projection makes
 the fractional step consistent to the truncation order.  At `N = 0`
 this reduces to plain Chorin; at `N = 1` it matches CN's `O(dt²)`.
 
-The pressure `p` is solved for directly each step.  No incremental
-form — `m_pressure` is the current pressure, and the previous step's
-value is used as the Krylov warm start.
+The pressure `p` is solved for directly each step.  There is no incremental
+form: `m_pressure` is the current pressure.  Pressure-only solves use the
+previous step's value as the Krylov warm start; the IB path recovers pressure
+after its marker-space solve.
 
 The modified Poisson is solved matrix-free with BiCGStab.
 `D B^N G` is composed from existing pieces (`ComputePressureGradient`,
@@ -259,13 +275,12 @@ the pressure, so the mean is not removed).
 
 - Moving/deforming-body kinematics beyond uniform prescribed
   `ib.velocity`.
-- The matrix-free marker-space force Schur solver
-  `S_f = M - B A^-1 C`: Belos FGMRES outside, an AMReX MLMG-based
-  approximate composite pressure inverse inside, and a local
-  `E B^N H` marker-block preconditioner.  The current scaled coupled
-  BiCGStab has no in-iteration block preconditioner, so scaling alone does
-  not cure its slow convergence.  The settled design and residual-acceptance
-  requirements are in `.agent-memory/project_ib_matrixfree_plan.md`.
+- Belos FGMRES and a local/overlapping marker-block preconditioner for the
+  matrix-free force Schur solver.  The current in-repo BiCGStab path uses a
+  fixed MLMG/defect-correction pressure inverse but no marker preconditioner;
+  the dense 3D channel therefore still falls back to coupled refinement.
+  The design and residual-acceptance requirements are in
+  `.agent-memory/project_ib_matrixfree_plan.md`.
 - Temporal subcycling between AMR levels.
 - Inhomogeneous Dirichlet data inside the truncated Neumann series
   (handled approximately: homogeneous in the series, re-imposed on
