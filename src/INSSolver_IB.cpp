@@ -121,7 +121,15 @@ void INSSolver::InitializeIBGeometry() {
   m_ib_geometry = ibm3d::LoadIBGeometry(m_ib_geometry_file);
   m_ib_geometry.UploadToDevice();
 
-  m_ib_force.assign(m_ib_geometry.markers.size() * AMREX_SPACEDIM, 0.0);
+  const auto nconstraints = m_ib_geometry.markers.size() * AMREX_SPACEDIM;
+  m_ib_force.resize(nconstraints);
+  Gpu::fillAsync(
+      m_ib_force.begin(), m_ib_force.end(),
+      [] AMREX_GPU_DEVICE(Real & value, Long) noexcept { value = 0.0_rt; });
+#if defined(AMREX_USE_GPU) && defined(AMREX_USE_MPI)
+  if (!ParallelDescriptor::UseGpuAwareMpi())
+    m_ib_mpi_staging.resize(nconstraints);
+#endif
 
   if (m_verbose > 0) {
     Print() << "Immersed boundary enabled\n"
@@ -132,7 +140,7 @@ void INSSolver::InitializeIBGeometry() {
   }
 }
 
-void INSSolver::SpreadIBForce(int lev, int dir, const std::vector<Real> &force,
+void INSSolver::SpreadIBForce(int lev, int dir, const MarkerVector &force,
                               MultiFab &hforce) {
   BL_PROFILE("INSSolver::SpreadIBForce()");
 
@@ -140,12 +148,8 @@ void INSSolver::SpreadIBForce(int lev, int dir, const std::vector<Real> &force,
   if (!m_ib_enabled || m_ib_geometry.markers.empty())
     return;
 
-  Gpu::DeviceVector<Real> force_device(force.size());
-  Gpu::copy(Gpu::hostToDevice, force.begin(), force.end(),
-            force_device.begin());
-
   const auto *markers = m_ib_geometry.device_markers.data();
-  const auto *f = force_device.data();
+  const auto *f = force.data();
   const int nmarkers = static_cast<int>(m_ib_geometry.markers.size());
 
   const Geometry &gm = geom[lev];
@@ -247,20 +251,20 @@ void INSSolver::SpreadIBForce(int lev, int dir, const std::vector<Real> &force,
 
 void INSSolver::InterpolateIBVelocity(
     int lev, const std::array<const MultiFab *, AMREX_SPACEDIM> &vel,
-    std::vector<Real> &marker_vel) const {
+    MarkerVector &marker_vel) {
   BL_PROFILE("INSSolver::InterpolateIBVelocity()");
 
   const auto &markers = m_ib_geometry.markers;
-  marker_vel.assign(markers.size() * AMREX_SPACEDIM, 0.0);
+  marker_vel.resize(markers.size() * AMREX_SPACEDIM);
+  Gpu::fillAsync(
+      marker_vel.begin(), marker_vel.end(),
+      [] AMREX_GPU_DEVICE(Real & value, Long) noexcept { value = 0.0_rt; });
   if (!m_ib_enabled || markers.empty())
     return;
 
   const auto *markers_p = m_ib_geometry.device_markers.data();
   const int nmarkers = static_cast<int>(markers.size());
-  Gpu::DeviceVector<Real> marker_vel_device(marker_vel.size());
-  Gpu::copy(Gpu::hostToDevice, marker_vel.begin(), marker_vel.end(),
-            marker_vel_device.begin());
-  Real *marker_vel_p = marker_vel_device.data();
+  Real *marker_vel_p = marker_vel.data();
 
   const Geometry &gm = geom[lev];
   const auto dx = gm.CellSizeArray();
@@ -364,11 +368,20 @@ void INSSolver::InterpolateIBVelocity(
     Gpu::streamSynchronize();
   }
 
-  Gpu::copy(Gpu::deviceToHost, marker_vel_device.begin(),
-            marker_vel_device.end(), marker_vel.begin());
-  Gpu::streamSynchronize();
-
   if (!marker_vel.empty()) {
+    Gpu::streamSynchronize();
+#if defined(AMREX_USE_GPU) && defined(AMREX_USE_MPI)
+    if (!ParallelDescriptor::UseGpuAwareMpi()) {
+      m_ib_mpi_staging.resize(marker_vel.size());
+      Gpu::copy(Gpu::deviceToHost, marker_vel.begin(), marker_vel.end(),
+                m_ib_mpi_staging.begin());
+      ParallelDescriptor::ReduceRealSum(
+          m_ib_mpi_staging.data(), static_cast<int>(m_ib_mpi_staging.size()));
+      Gpu::copy(Gpu::hostToDevice, m_ib_mpi_staging.begin(),
+                m_ib_mpi_staging.end(), marker_vel.begin());
+      return;
+    }
+#endif
     ParallelDescriptor::ReduceRealSum(marker_vel.data(),
                                       static_cast<int>(marker_vel.size()));
   }

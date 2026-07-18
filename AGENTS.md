@@ -58,10 +58,13 @@ Key decisions already settled, do not re-litigate:
   quadrature weight, Peskin 4-point delta, component-wise MAC spreading
   (`f_x` to x-faces, etc.), and marker-centred finite-support
   spread/interpolate kernels.  Interpolation uses owner masks so shared
-  patch faces are not double-counted.  Geometry and force vectors are
-  replicated on every MPI rank.  IB coupling is applied only on the
-  finest level; `ErrorEst` tags a configurable neighborhood of the
-  markers so AMR keeps the body on the finest mesh.
+  patch faces are not double-counted.  Geometry and marker-space vectors are
+  replicated on every MPI rank; force and Krylov vectors use
+  `amrex::Gpu::DeviceVector`.  Interpolation reductions pass device pointers
+  directly when `ParallelDescriptor::UseGpuAwareMpi()` is true and otherwise
+  use a reusable pinned-host staging buffer.  IB coupling is applied only on
+  the finest level; `ErrorEst` tags a configurable neighborhood of the markers
+  so AMR keeps the body on the finest mesh.
 - **`D B^N G` is negative semidefinite** (eigenvalues `−k² · …`).
   Both the composite pressure operator and the RHS in `ProjectPerot` are
   negated so full-domain levels have the positive sign.  Composite C/F

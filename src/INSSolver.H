@@ -80,6 +80,8 @@ enum class BCKind { periodic, dirichlet, slip, outflow };
 
 class INSSolver : public amrex::AmrCore {
 public:
+  using MarkerVector = amrex::Gpu::DeviceVector<amrex::Real>;
+
   INSSolver();
   ~INSSolver() override = default;
 
@@ -138,7 +140,8 @@ private:
   amrex::RealVect m_ib_velocity = amrex::RealVect::TheZeroVector();
   amrex::Real m_ib_refine_radius = 4.0; ///< in local cell widths
   ibm3d::IBGeometry m_ib_geometry;
-  std::vector<amrex::Real> m_ib_force;
+  MarkerVector m_ib_force;
+  amrex::Gpu::PinnedVector<amrex::Real> m_ib_mpi_staging;
 
   // ---------------- Boundary conditions ----------------
   // Indexed by direction (0=x, 1=y, 2=z); lo and hi domain faces.
@@ -251,11 +254,11 @@ public:
   void ApplyCompositeBNFaces(amrex::Vector<FaceMFArray> &src,
                              amrex::Vector<FaceMFArray> &dst);
 
-  void SpreadIBForce(int lev, int dir, const std::vector<amrex::Real> &force,
+  void SpreadIBForce(int lev, int dir, const MarkerVector &force,
                      amrex::MultiFab &hforce);
   void InterpolateIBVelocity(
       int lev, const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel,
-      std::vector<amrex::Real> &marker_vel) const;
+      MarkerVector &marker_vel);
   void AddIBTags(int lev, amrex::TagBoxArray &tags) const;
 
   amrex::Vector<std::unique_ptr<amrex::iMultiFab>>
@@ -266,15 +269,15 @@ public:
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
   void ApplyCompositeProjectionBlocks(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
-      const std::vector<amrex::Real> *force,
+      const MarkerVector *force,
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result_p,
-      std::vector<amrex::Real> *result_ib,
+      MarkerVector *result_ib,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
   void ApplyCompositeIBProjectionOp(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &phi,
-      const std::vector<amrex::Real> &force,
+      const MarkerVector &force,
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &result_p,
-      std::vector<amrex::Real> &result_ib,
+      MarkerVector &result_ib,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
   /// Standard-Poisson approximation used only as a candidate initial guess.
   void BuildCompositePoissonInitialGuess(
@@ -291,7 +294,7 @@ public:
   int SolveCompositeIBProjection(
       amrex::Vector<std::unique_ptr<amrex::MultiFab>> &p,
       const amrex::Vector<std::unique_ptr<amrex::MultiFab>> &rhs_p,
-      const std::vector<amrex::Real> &rhs_ib,
+      const MarkerVector &rhs_ib,
       const amrex::Vector<std::unique_ptr<amrex::iMultiFab>> &active_masks);
 
   /// Optional regression check: outflow Dirichlet pressure must remove

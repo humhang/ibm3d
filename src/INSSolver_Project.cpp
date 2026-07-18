@@ -30,13 +30,12 @@
 #include <AMReX_MLPoisson.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_Print.H>
+#include <AMReX_Reduce.H>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <numeric>
 #include <sstream>
-#include <vector>
 
 using namespace amrex;
 
@@ -44,6 +43,7 @@ namespace {
 
 using CellHierarchy = Vector<std::unique_ptr<MultiFab>>;
 using MaskHierarchy = Vector<std::unique_ptr<iMultiFab>>;
+using MarkerVector = INSSolver::MarkerVector;
 
 void mask_covered_cells(MultiFab &mf, const iMultiFab &mask) {
 #ifdef AMREX_USE_OMP
@@ -110,42 +110,83 @@ Real dot_composite(const CellHierarchy &a, const CellHierarchy &b) {
   return value;
 }
 
-Real dot_vector(const std::vector<Real> &a, const std::vector<Real> &b) {
-  return std::inner_product(a.begin(), a.end(), b.begin(), Real(0.0));
+void set_vector(MarkerVector &values, Real value) {
+  Real *values_p = values.data();
+  const auto size = static_cast<Long>(values.size());
+  amrex::ParallelFor(
+      size, [=] AMREX_GPU_DEVICE(Long i) noexcept { values_p[i] = value; });
 }
 
-Real dot_coupled(const CellHierarchy &a_p, const std::vector<Real> &a_ib,
-                 const CellHierarchy &b_p, const std::vector<Real> &b_ib) {
+void copy_vector(MarkerVector &dst, const MarkerVector &src) {
+  dst.resize(src.size());
+  Gpu::copyAsync(Gpu::deviceToDevice, src.begin(), src.end(), dst.begin());
+}
+
+Real dot_vector(const MarkerVector &a, const MarkerVector &b) {
+  AMREX_ALWAYS_ASSERT(a.size() == b.size());
+  const Real *a_p = a.data();
+  const Real *b_p = b.data();
+  return Reduce::Sum<Real>(
+      static_cast<Long>(a.size()),
+      [=] AMREX_GPU_DEVICE(Long i) noexcept { return a_p[i] * b_p[i]; });
+}
+
+Real dot_coupled(const CellHierarchy &a_p, const MarkerVector &a_ib,
+                 const CellHierarchy &b_p, const MarkerVector &b_ib) {
   return dot_composite(a_p, b_p) + dot_vector(a_ib, b_ib);
 }
 
-void saxpy_vector(std::vector<Real> &dst, Real a, const std::vector<Real> &x) {
-  for (std::size_t i = 0; i < dst.size(); ++i)
-    dst[i] += a * x[i];
+void saxpy_vector(MarkerVector &dst, Real a, const MarkerVector &x) {
+  AMREX_ALWAYS_ASSERT(dst.size() == x.size());
+  Real *dst_p = dst.data();
+  const Real *x_p = x.data();
+  const auto size = static_cast<Long>(dst.size());
+  amrex::ParallelFor(
+      size, [=] AMREX_GPU_DEVICE(Long i) noexcept { dst_p[i] += a * x_p[i]; });
 }
 
-void lincomb_vector(std::vector<Real> &dst, Real a, const std::vector<Real> &x,
-                    Real b, const std::vector<Real> &y) {
-  for (std::size_t i = 0; i < dst.size(); ++i)
-    dst[i] = a * x[i] + b * y[i];
+void lincomb_vector(MarkerVector &dst, Real a, const MarkerVector &x, Real b,
+                    const MarkerVector &y) {
+  AMREX_ALWAYS_ASSERT(x.size() == y.size());
+  dst.resize(x.size());
+  Real *dst_p = dst.data();
+  const Real *x_p = x.data();
+  const Real *y_p = y.data();
+  const auto size = static_cast<Long>(dst.size());
+  amrex::ParallelFor(size, [=] AMREX_GPU_DEVICE(Long i) noexcept {
+    dst_p[i] = a * x_p[i] + b * y_p[i];
+  });
 }
 
-void saxpy_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
-                   const CellHierarchy &x_p, const std::vector<Real> &x_ib,
+void saxpy_coupled(CellHierarchy &dst_p, MarkerVector &dst_ib, Real a,
+                   const CellHierarchy &x_p, const MarkerVector &x_ib,
                    const MaskHierarchy &mask) {
   saxpy_composite(dst_p, a, x_p, mask);
   saxpy_vector(dst_ib, a, x_ib);
 }
 
-void lincomb_coupled(CellHierarchy &dst_p, std::vector<Real> &dst_ib, Real a,
-                     const CellHierarchy &x_p, const std::vector<Real> &x_ib,
-                     Real b, const CellHierarchy &y_p,
-                     const std::vector<Real> &y_ib, const MaskHierarchy &mask) {
+void lincomb_coupled(CellHierarchy &dst_p, MarkerVector &dst_ib, Real a,
+                     const CellHierarchy &x_p, const MarkerVector &x_ib, Real b,
+                     const CellHierarchy &y_p, const MarkerVector &y_ib,
+                     const MaskHierarchy &mask) {
   lincomb_composite(dst_p, a, x_p, b, y_p, mask);
   lincomb_vector(dst_ib, a, x_ib, b, y_ib);
 }
 
-Real norm2_vector(const std::vector<Real> &a) { return dot_vector(a, a); }
+Real norm2_vector(const MarkerVector &a) { return dot_vector(a, a); }
+
+Real marker_slip_norm_inf(const MarkerVector &marker_velocity,
+                          GpuArray<Real, AMREX_SPACEDIM> target_velocity) {
+  const Real *velocity_p = marker_velocity.data();
+  return Reduce::Max<Real>(
+      static_cast<Long>(marker_velocity.size()),
+      [=] AMREX_GPU_DEVICE(Long i) noexcept {
+        const Real difference =
+            velocity_p[i] - target_velocity[i % AMREX_SPACEDIM];
+        return difference < 0.0_rt ? -difference : difference;
+      },
+      0.0_rt);
+}
 
 struct CoupledResidual {
   Real pressure_norm2;
@@ -155,8 +196,20 @@ struct CoupledResidual {
 // H already contains marker quadrature.  This scaling equilibrates all four
 // uniform-grid blocks at O(1/h) and recovers their adjoint scaling.
 struct CoupledScaling {
+  static void
+  initialize_force_scaling(MarkerVector &force_columns,
+                           const Gpu::DeviceVector<ibm3d::IBMarker> &markers,
+                           Real marker_measure) {
+    const auto *markers_p = markers.data();
+    Real *force_columns_p = force_columns.data();
+    const auto size = static_cast<Long>(force_columns.size());
+    amrex::ParallelFor(size, [=] AMREX_GPU_DEVICE(Long i) noexcept {
+      force_columns_p[i] =
+          marker_measure / markers_p[i / AMREX_SPACEDIM].weight;
+    });
+  }
   CoupledScaling(const Vector<Geometry> &geometry, int finest_level,
-                 const std::vector<ibm3d::IBMarker> &markers)
+                 const Gpu::DeviceVector<ibm3d::IBMarker> &markers)
       : pressure_rows(finest_level + 1),
         force_columns(markers.size() * AMREX_SPACEDIM) {
     Real finest_cell_volume = 1.0_rt;
@@ -173,11 +226,7 @@ struct CoupledScaling {
 
     const Real marker_measure =
         finest_cell_volume / pressure_rows[finest_level];
-    for (std::size_t marker = 0; marker < markers.size(); ++marker) {
-      const Real scale = marker_measure / markers[marker].weight;
-      for (int d = 0; d < AMREX_SPACEDIM; ++d)
-        force_columns[marker * AMREX_SPACEDIM + d] = scale;
-    }
+    initialize_force_scaling(force_columns, markers, marker_measure);
   }
 
   void scale_pressure(CellHierarchy &values) const {
@@ -186,24 +235,34 @@ struct CoupledScaling {
       values[lev]->mult(pressure_rows[lev], 0, 1, 0);
   }
 
-  void to_scaled_force(const std::vector<Real> &physical,
-                       std::vector<Real> &scaled) const {
+  void to_scaled_force(const MarkerVector &physical,
+                       MarkerVector &scaled) const {
     AMREX_ALWAYS_ASSERT(physical.size() == force_columns.size());
     scaled.resize(physical.size());
-    for (std::size_t i = 0; i < physical.size(); ++i)
-      scaled[i] = physical[i] / force_columns[i];
+    const Real *physical_p = physical.data();
+    const Real *force_columns_p = force_columns.data();
+    Real *scaled_p = scaled.data();
+    const auto size = static_cast<Long>(scaled.size());
+    amrex::ParallelFor(size, [=] AMREX_GPU_DEVICE(Long i) noexcept {
+      scaled_p[i] = physical_p[i] / force_columns_p[i];
+    });
   }
 
-  void to_physical_force(const std::vector<Real> &scaled,
-                         std::vector<Real> &physical) const {
+  void to_physical_force(const MarkerVector &scaled,
+                         MarkerVector &physical) const {
     AMREX_ALWAYS_ASSERT(scaled.size() == force_columns.size());
     physical.resize(scaled.size());
-    for (std::size_t i = 0; i < scaled.size(); ++i)
-      physical[i] = force_columns[i] * scaled[i];
+    const Real *scaled_p = scaled.data();
+    const Real *force_columns_p = force_columns.data();
+    Real *physical_p = physical.data();
+    const auto size = static_cast<Long>(scaled.size());
+    amrex::ParallelFor(size, [=] AMREX_GPU_DEVICE(Long i) noexcept {
+      physical_p[i] = force_columns_p[i] * scaled_p[i];
+    });
   }
 
   Vector<Real> pressure_rows;
-  std::vector<Real> force_columns;
+  MarkerVector force_columns;
 };
 
 Real sum_composite(const CellHierarchy &a) {
@@ -291,8 +350,8 @@ void INSSolver::ApplyCompositeModifiedPoissonOp(
 }
 
 void INSSolver::ApplyCompositeProjectionBlocks(
-    CellHierarchy &phi, const std::vector<Real> *force, CellHierarchy &result_p,
-    std::vector<Real> *result_ib, const MaskHierarchy &active_masks) {
+    CellHierarchy &phi, const MarkerVector *force, CellHierarchy &result_p,
+    MarkerVector *result_ib, const MaskHierarchy &active_masks) {
   BL_PROFILE("INSSolver::ApplyCompositeProjectionBlocks()");
 
   CellHierarchy phi_sync;
@@ -303,7 +362,8 @@ void INSSolver::ApplyCompositeProjectionBlocks(
                         ref_ratio[lev]);
 
   if (result_ib != nullptr) {
-    result_ib->assign(m_ib_geometry.markers.size() * AMREX_SPACEDIM, 0.0_rt);
+    result_ib->resize(m_ib_geometry.markers.size() * AMREX_SPACEDIM);
+    set_vector(*result_ib, 0.0_rt);
   }
 
   Vector<FaceMFArray> q_hierarchy(finest_level + 1);
@@ -346,8 +406,8 @@ void INSSolver::ApplyCompositeProjectionBlocks(
 }
 
 void INSSolver::ApplyCompositeIBProjectionOp(
-    CellHierarchy &phi, const std::vector<Real> &force, CellHierarchy &result_p,
-    std::vector<Real> &result_ib, const MaskHierarchy &active_masks) {
+    CellHierarchy &phi, const MarkerVector &force, CellHierarchy &result_p,
+    MarkerVector &result_ib, const MaskHierarchy &active_masks) {
   BL_PROFILE("INSSolver::ApplyCompositeIBProjectionOp()");
 
   ApplyCompositeProjectionBlocks(phi, &force, result_p, &result_ib,
@@ -582,7 +642,7 @@ int INSSolver::SolveCompositeModifiedPoisson(CellHierarchy &p,
 
 int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
                                           const CellHierarchy &rhs_p_in,
-                                          const std::vector<Real> &rhs_ib,
+                                          const MarkerVector &rhs_ib,
                                           const MaskHierarchy &active_masks) {
   BL_PROFILE("INSSolver::SolveCompositeIBProjection()");
 
@@ -599,14 +659,16 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
   AMREX_ALWAYS_ASSERT(rhs_ib.size() ==
                       m_ib_geometry.markers.size() * AMREX_SPACEDIM);
   AMREX_ALWAYS_ASSERT(m_ib_force.size() == rhs_ib.size());
-  const CoupledScaling scaling(geom, finest_level, m_ib_geometry.markers);
-  std::vector<Real> scaled_force;
-  std::vector<Real> physical_force;
+  const CoupledScaling scaling(geom, finest_level,
+                               m_ib_geometry.device_markers);
+  MarkerVector scaled_force;
+  MarkerVector physical_force;
   scaling.to_scaled_force(m_ib_force, scaled_force);
   CellHierarchy initial_p;
   define_composite_like(initial_p, p, 1);
   copy_composite_unmasked(initial_p, p);
-  const std::vector<Real> initial_scaled_force = scaled_force;
+  MarkerVector initial_scaled_force;
+  copy_vector(initial_scaled_force, scaled_force);
 
   CellHierarchy scaled_rhs_p;
   define_composite_like(scaled_rhs_p, rhs_p, 0);
@@ -718,12 +780,15 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
   for (auto &level : zero_p)
     level->setVal(0.0_rt);
 
-  std::vector<Real> force_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> pressure_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> base_pressure_ib(rhs_ib.size(), 0.0_rt);
+  MarkerVector force_ib(rhs_ib.size());
+  MarkerVector pressure_ib(rhs_ib.size());
+  MarkerVector base_pressure_ib(rhs_ib.size());
+  set_vector(force_ib, 0.0_rt);
+  set_vector(pressure_ib, 0.0_rt);
+  set_vector(base_pressure_ib, 0.0_rt);
   int schur_applications = 0;
 
-  const auto apply_force_blocks = [&](const std::vector<Real> &input_force) {
+  const auto apply_force_blocks = [&](const MarkerVector &input_force) {
     scaling.to_physical_force(input_force, physical_force);
     ApplyCompositeProjectionBlocks(zero_p, &physical_force, force_p, &force_ib,
                                    active_masks);
@@ -734,8 +799,8 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
                                    &pressure_ib, active_masks);
   };
 
-  const auto apply_schur = [&](const std::vector<Real> &input_force,
-                               std::vector<Real> &result) {
+  const auto apply_schur = [&](const MarkerVector &input_force,
+                               MarkerVector &result) {
     BL_PROFILE("INSSolver::ApplyIBForceSchurOp()");
 
     ++schur_applications;
@@ -748,17 +813,15 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
       subtract_composite_mean(pressure_rhs, active_masks);
     apply_pressure_inverse(pressure_rhs, pressure_response);
     apply_pressure_blocks(pressure_response);
-    result.resize(input_force.size());
-    for (std::size_t i = 0; i < result.size(); ++i)
-      result[i] = force_ib[i] + pressure_ib[i] - base_pressure_ib[i];
+    lincomb_vector(result, 1.0_rt, force_ib, 1.0_rt, pressure_ib);
+    saxpy_vector(result, -1.0_rt, base_pressure_ib);
   };
 
   apply_pressure_inverse(rhs_p, pressure_rhs_response);
   apply_pressure_blocks(pressure_rhs_response);
-  base_pressure_ib = pressure_ib;
-  std::vector<Real> schur_rhs(rhs_ib.size(), 0.0_rt);
-  for (std::size_t i = 0; i < schur_rhs.size(); ++i)
-    schur_rhs[i] = rhs_ib[i] - pressure_ib[i];
+  copy_vector(base_pressure_ib, pressure_ib);
+  MarkerVector schur_rhs(rhs_ib.size());
+  lincomb_vector(schur_rhs, 1.0_rt, rhs_ib, -1.0_rt, pressure_ib);
 
   const Real schur_rhs_norm2 = norm2_vector(schur_rhs);
   const Real schur_rhs_norm =
@@ -766,23 +829,29 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
   const Real schur_tol2 =
       m_poisson_tol * m_poisson_tol * std::max(schur_rhs_norm2, Real(1.0e-300));
 
-  std::vector<Real> residual(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> rhat(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> search(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> image(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> intermediate(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> image_intermediate(rhs_ib.size(), 0.0_rt);
+  MarkerVector residual(rhs_ib.size());
+  MarkerVector rhat(rhs_ib.size());
+  MarkerVector search(rhs_ib.size());
+  MarkerVector image(rhs_ib.size());
+  MarkerVector intermediate(rhs_ib.size());
+  MarkerVector image_intermediate(rhs_ib.size());
+  set_vector(residual, 0.0_rt);
+  set_vector(rhat, 0.0_rt);
+  set_vector(search, 0.0_rt);
+  set_vector(image, 0.0_rt);
+  set_vector(intermediate, 0.0_rt);
+  set_vector(image_intermediate, 0.0_rt);
 
   const auto evaluate_schur_residual = [&]() {
     apply_schur(scaled_force, image);
-    for (std::size_t i = 0; i < residual.size(); ++i)
-      residual[i] = schur_rhs[i] - image[i];
+    lincomb_vector(residual, 1.0_rt, schur_rhs, -1.0_rt, image);
     return norm2_vector(residual);
   };
 
   Real schur_resid2 = evaluate_schur_residual();
   const Real initial_schur_resid = std::sqrt(std::max(schur_resid2, Real(0.0)));
-  std::vector<Real> best_force = scaled_force;
+  MarkerVector best_force;
+  copy_vector(best_force, scaled_force);
   Real best_schur_resid2 = schur_resid2;
 
   constexpr int residual_refresh = 50;
@@ -796,9 +865,9 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
     if (schur_resid2 <= schur_tol2)
       break;
 
-    rhat = residual;
-    std::fill(search.begin(), search.end(), 0.0_rt);
-    std::fill(image.begin(), image.end(), 0.0_rt);
+    copy_vector(rhat, residual);
+    set_vector(search, 0.0_rt);
+    set_vector(image, 0.0_rt);
 
     Real rho = 1.0_rt;
     Real alpha = 1.0_rt;
@@ -887,7 +956,7 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
     schur_resid2 = evaluate_schur_residual();
     if (std::isfinite(schur_resid2) && schur_resid2 < best_schur_resid2) {
       best_schur_resid2 = schur_resid2;
-      best_force = scaled_force;
+      copy_vector(best_force, scaled_force);
     }
     if (cycle_breakdown)
       break;
@@ -895,7 +964,7 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
 
   if (std::isfinite(best_schur_resid2) &&
       (!std::isfinite(schur_resid2) || best_schur_resid2 < schur_resid2)) {
-    scaled_force = best_force;
+    copy_vector(scaled_force, best_force);
     schur_resid2 = evaluate_schur_residual();
   }
 
@@ -940,8 +1009,10 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
   define_composite_like(coupled_image_p, rhs_p, 0);
   define_composite_like(coupled_residual_p, rhs_p, 0);
   define_composite_like(scaled_residual_p, rhs_p, 0);
-  std::vector<Real> coupled_image_ib(rhs_ib.size(), 0.0_rt);
-  std::vector<Real> coupled_residual_ib(rhs_ib.size(), 0.0_rt);
+  MarkerVector coupled_image_ib(rhs_ib.size());
+  MarkerVector coupled_residual_ib(rhs_ib.size());
+  set_vector(coupled_image_ib, 0.0_rt);
+  set_vector(coupled_residual_ib, 0.0_rt);
 
   Real coupled_resid = std::numeric_limits<Real>::infinity();
   const auto evaluate_physical_coupled_residual = [&]() {
@@ -950,8 +1021,8 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
                                  coupled_image_ib, active_masks);
     lincomb_composite(coupled_residual_p, 1.0_rt, rhs_p, -1.0_rt,
                       coupled_image_p, active_masks);
-    for (std::size_t i = 0; i < coupled_residual_ib.size(); ++i)
-      coupled_residual_ib[i] = rhs_ib[i] - coupled_image_ib[i];
+    lincomb_vector(coupled_residual_ib, 1.0_rt, rhs_ib, -1.0_rt,
+                   coupled_image_ib);
 
     copy_composite(scaled_residual_p, coupled_residual_p, active_masks);
     scaling.scale_pressure(scaled_residual_p);
@@ -968,7 +1039,7 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
   const Real post_schur_coupled_resid = coupled_resid;
   if (coupled_resid > 10.0_rt * coupled_tol) {
     copy_composite_unmasked(p, initial_p);
-    scaled_force = initial_scaled_force;
+    copy_vector(scaled_force, initial_scaled_force);
     final_residual = evaluate_physical_coupled_residual();
     if (!m_pressure_singular) {
       CellHierarchy saved_initial_p;
@@ -1000,15 +1071,20 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
     define_composite_like(refinement_image, p, 0);
     define_composite_like(refinement_intermediate, p, 1);
     define_composite_like(refinement_intermediate_image, p, 0);
-    std::vector<Real> refinement_rhat_ib(rhs_ib.size(), 0.0_rt);
-    std::vector<Real> refinement_search_ib(rhs_ib.size(), 0.0_rt);
-    std::vector<Real> refinement_image_ib(rhs_ib.size(), 0.0_rt);
-    std::vector<Real> refinement_intermediate_ib(rhs_ib.size(), 0.0_rt);
-    std::vector<Real> refinement_intermediate_image_ib(rhs_ib.size(), 0.0_rt);
+    MarkerVector refinement_rhat_ib(rhs_ib.size());
+    MarkerVector refinement_search_ib(rhs_ib.size());
+    MarkerVector refinement_image_ib(rhs_ib.size());
+    MarkerVector refinement_intermediate_ib(rhs_ib.size());
+    MarkerVector refinement_intermediate_image_ib(rhs_ib.size());
+    set_vector(refinement_rhat_ib, 0.0_rt);
+    set_vector(refinement_search_ib, 0.0_rt);
+    set_vector(refinement_image_ib, 0.0_rt);
+    set_vector(refinement_intermediate_ib, 0.0_rt);
+    set_vector(refinement_intermediate_image_ib, 0.0_rt);
 
     const auto apply_scaled_coupled =
-        [&](CellHierarchy &input_p, const std::vector<Real> &input_force,
-            CellHierarchy &result_p, std::vector<Real> &result_ib) {
+        [&](CellHierarchy &input_p, const MarkerVector &input_force,
+            CellHierarchy &result_p, MarkerVector &result_ib) {
           scaling.to_physical_force(input_force, physical_force);
           ApplyCompositeIBProjectionOp(input_p, physical_force, result_p,
                                        result_ib, active_masks);
@@ -1019,8 +1095,8 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
       apply_scaled_coupled(p, scaled_force, coupled_image_p, coupled_image_ib);
       lincomb_composite(scaled_residual_p, 1.0_rt, scaled_rhs_p, -1.0_rt,
                         coupled_image_p, active_masks);
-      for (std::size_t i = 0; i < coupled_residual_ib.size(); ++i)
-        coupled_residual_ib[i] = rhs_ib[i] - coupled_image_ib[i];
+      lincomb_vector(coupled_residual_ib, 1.0_rt, rhs_ib, -1.0_rt,
+                     coupled_image_ib);
       return std::sqrt(
           std::max(dot_composite(scaled_residual_p, scaled_residual_p) +
                        norm2_vector(coupled_residual_ib),
@@ -1031,7 +1107,8 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
     CellHierarchy best_refinement_p;
     define_composite_like(best_refinement_p, p, 1);
     copy_composite_unmasked(best_refinement_p, p);
-    std::vector<Real> best_refinement_force = scaled_force;
+    MarkerVector best_refinement_force;
+    copy_vector(best_refinement_force, scaled_force);
     Real best_refinement_resid = refinement_resid;
 
     constexpr int coupled_residual_refresh = 100;
@@ -1044,14 +1121,13 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
         break;
 
       copy_composite(refinement_rhat, scaled_residual_p, active_masks);
-      refinement_rhat_ib = coupled_residual_ib;
+      copy_vector(refinement_rhat_ib, coupled_residual_ib);
       for (auto &level : refinement_search)
         level->setVal(0.0_rt);
       for (auto &level : refinement_image)
         level->setVal(0.0_rt);
-      std::fill(refinement_search_ib.begin(), refinement_search_ib.end(),
-                0.0_rt);
-      std::fill(refinement_image_ib.begin(), refinement_image_ib.end(), 0.0_rt);
+      set_vector(refinement_search_ib, 0.0_rt);
+      set_vector(refinement_image_ib, 0.0_rt);
 
       Real rho = 1.0_rt;
       Real alpha = 1.0_rt;
@@ -1163,7 +1239,7 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
           refinement_resid < best_refinement_resid) {
         best_refinement_resid = refinement_resid;
         copy_composite_unmasked(best_refinement_p, p);
-        best_refinement_force = scaled_force;
+        copy_vector(best_refinement_force, scaled_force);
       }
       if (cycle_breakdown)
         break;
@@ -1173,7 +1249,7 @@ int INSSolver::SolveCompositeIBProjection(CellHierarchy &p,
         (!std::isfinite(refinement_resid) ||
          best_refinement_resid < refinement_resid)) {
       copy_composite_unmasked(p, best_refinement_p);
-      scaled_force = best_refinement_force;
+      copy_vector(scaled_force, best_refinement_force);
       refinement_resid = evaluate_scaled_coupled_residual();
     }
     if (m_pressure_singular)
@@ -1365,19 +1441,21 @@ void INSSolver::ProjectPerot() {
   }
 
   if (use_ib) {
-    std::vector<Real> rhs_ib;
+    MarkerVector rhs_ib;
     InterpolateIBVelocity(finest_level,
                           {AMREX_D_DECL(m_vstar[finest_level][0].get(),
                                         m_vstar[finest_level][1].get(),
                                         m_vstar[finest_level][2].get())},
                           rhs_ib);
-    for (std::size_t marker = 0; marker < m_ib_geometry.markers.size();
-         ++marker) {
-      for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-        const auto n = marker * AMREX_SPACEDIM + d;
-        rhs_ib[n] = (rhs_ib[n] - m_ib_velocity[d]) / m_dt;
-      }
-    }
+    GpuArray<Real, AMREX_SPACEDIM> ib_velocity{};
+    for (int d = 0; d < AMREX_SPACEDIM; ++d)
+      ib_velocity[d] = m_ib_velocity[d];
+    Real *rhs_ib_p = rhs_ib.data();
+    const Real dt = m_dt;
+    amrex::ParallelFor(static_cast<Long>(rhs_ib.size()), [=] AMREX_GPU_DEVICE(
+                                                             Long i) noexcept {
+      rhs_ib_p[i] = (rhs_ib_p[i] - ib_velocity[i % AMREX_SPACEDIM]) / dt;
+    });
 
     SolveCompositeIBProjection(m_pressure, rhs, rhs_ib, active_masks);
   } else {
@@ -1434,20 +1512,16 @@ void INSSolver::ProjectPerot() {
     EnforceVelDirichlet(lev, vel_out);
 
     if (use_ib_on_level && m_verbose > 1) {
-      std::vector<Real> marker_vel;
+      MarkerVector marker_vel;
       InterpolateIBVelocity(
           lev,
           {AMREX_D_DECL(m_vel[lev][0].get(), m_vel[lev][1].get(),
                         m_vel[lev][2].get())},
           marker_vel);
-      Real slip = 0.0_rt;
-      for (std::size_t marker = 0; marker < m_ib_geometry.markers.size();
-           ++marker) {
-        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-          const auto n = marker * AMREX_SPACEDIM + d;
-          slip = std::max(slip, std::abs(marker_vel[n] - m_ib_velocity[d]));
-        }
-      }
+      GpuArray<Real, AMREX_SPACEDIM> ib_velocity{};
+      for (int d = 0; d < AMREX_SPACEDIM; ++d)
+        ib_velocity[d] = m_ib_velocity[d];
+      const Real slip = marker_slip_norm_inf(marker_vel, ib_velocity);
       Print() << "  |E u - U_ib|_inf = " << slip << "\n";
     }
   }
