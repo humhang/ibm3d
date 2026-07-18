@@ -4,16 +4,16 @@ description: One-line purpose for every source file, so future agents don't have
 type: project
 originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 ---
-`src/` layout (updated 2026-07-11 — composite Perot/IB projection):
+`src/` layout (updated 2026-07-17 — stored staggered stress):
 
 | File                     | Role                                                                                |
 |--------------------------|-------------------------------------------------------------------------------------|
 | `main.cpp`               | Trivial entry: `amrex::Initialize` → `INSSolver{}` → `InitData` → `Run`.            |
-| `INSSolver.H`            | Class declaration, `BCKind` enum, per-face BC storage, helper signatures.            |
-| `INSSolver.cpp`          | Constructor, ParmParse, time loop, AmrCore hooks, FillPatch helpers (staggered velocity post-fill and pressure scratch-BC callbacks), average-down, plotfile, IC (Taylor–Green *or* quiescent for BC-driven flows). |
+| `INSSolver.H`            | Class declaration, `BCKind` enum, per-face BC storage, staggered velocity/stress hierarchy storage, helper signatures. |
+| `INSSolver.cpp`          | Constructor, ParmParse, time loop, AmrCore hooks, velocity/stress allocation and lifecycle, FillPatch helpers (staggered velocity post-fill and pressure scratch-BC callbacks), average-down, plotfile, IC (Taylor–Green *or* quiescent for BC-driven flows). |
 | `INSSolver_BC.cpp`       | `ParseBCs`, `BuildBCRecs`, `FillVelGhostPhys` (Dirichlet/slip/outflow, normal vs tangential staggered handling, homogeneous flag), `FillPresGhostPhys` (Neumann walls / Dirichlet-0 outflow), `EnforceVelDirichlet`. |
 | `INSSolver_Advect.cpp`   | `ComputeAdvection(lev, adv, vel_in)` — face-by-face `-(u·∇)u`; `vel_in` already FillPatched + physical-BC filled. |
-| `INSSolver_Diffuse.cpp`  | Face Laplacian/gradient kernels, per-level `ApplyBNFace`, hierarchy `ApplyCompositeBNFaces`, and predictor-RHS construction. |
+| `INSSolver_Diffuse.cpp`  | Staggered viscous-stress gradient/divergence and refresh kernels, face Laplacian/gradient kernels, per-level `ApplyBNFace`, hierarchy `ApplyCompositeBNFaces`, and predictor-RHS construction. |
 | `INSSolver_Project.cpp`  | Composite modified-Poisson/IB blocks, pressure-only and marker force-Schur BiCGStab, MLMG pressure inverse, true coupled-residual fallback, `ProjectPerot`. |
 | `INSSolver_IB.cpp`       | IB geometry initialization, Peskin 4-point spread/interpolate (`H/E`), finest-level IB tagging, and level-local kernels used by the composite solve. |
 | `IBGeometry.H/.cpp`      | Dimension-selected host loaders plus marker construction and device copies for IB geometry: 2D ASCII line-segment curves, 3D ASCII/binary STL triangle surfaces with exact coordinate de-duplication into indexed connectivity. |
@@ -53,6 +53,8 @@ live in `INSSolver_IB.cpp`; composite projection operators and Krylov
 orchestration live in `INSSolver_Project.cpp`.  Wall BCs belong in the
 existing BC and diffusion/projection files.
 
-**Do not** restore `INSSolver_Stress.cpp` or `TrilinosPoissonSolver.H`
-(deleted on 2026-05-14) — they were single-level IB-stress and assembled-
-Trilinos placeholders, both superseded by the current direction.
+**Do not** restore the historical `INSSolver_Stress.cpp` or
+`TrilinosPoissonSolver.H` placeholders.  Staggered diffusive stress belongs in
+`INSSolver_Diffuse.cpp`; the old file represented a different single-level IB
+stress path.  The assembled-Trilinos placeholder is likewise superseded by
+the current matrix-free direction.

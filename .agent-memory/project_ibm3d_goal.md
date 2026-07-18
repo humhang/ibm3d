@@ -8,12 +8,19 @@ originSessionId: 12fb2afb-57e7-4a3b-acaf-2f8c91188f9d
 solver implementing the **Taira–Colonius immersed-boundary projection method**
 (JCP 2007, doi.org/10.1016/j.jcp.2007.03.005) on top of AMReX.
 
-**Current status (updated 2026-07-11)**: the NS+AMR substrate is
+**Current status (updated 2026-07-17)**: the NS+AMR substrate is
 implemented and verified, and the first prescribed-velocity
 Taira–Colonius IB projection path uses a composite pressure hierarchy with
 the Lagrangian coupling attached only to the finest AMR level.
 
 - Staggered (MAC) grid, second-order centred differencing.
+- All components of the symmetric viscous Cauchy stress
+  `tau_ij = nu * (d(u_i)/d(x_j) + d(u_j)/d(x_i))` are stored on their natural
+  MAC locations (diagonal at cell centres, cross components on edges).  The
+  CN predictor takes the divergence of the stress saved after the preceding
+  projection/average-down; initialization and regridding refresh it from the
+  matching velocity.  Pressure remains separate, with total stress
+  `sigma = -p I + tau`; traction boundary conditions are not yet imposed.
 - Explicit AB2 advection, Crank–Nicolson diffusion via truncated Neumann
   series `B^N = Σ_{k=0}^{N} (εL)^k ≈ (I − εL)^{-1}`.  Default `N = 2`.
 - Pressure step solves the **modified Poisson** `(D B^N G) p = D u*/dt`
@@ -67,6 +74,10 @@ and solves the matrix-free force Schur equation with in-repo BiCGStab.  It uses
 a fixed MLMG/modified-Poisson approximate pressure inverse, exact pressure
 recovery, and a true full-coupled residual check.  The Tpetra/Belos wrapper and
 marker-block preconditioner remain future work.
+
+**What changed on 2026-07-17**: the hierarchy now retains the full staggered
+diffusive stress tensor.  The explicit CN half-step uses its divergence, and
+the final synchronized velocity regenerates the stress for the next step.
 
 **How to apply:** keep the Perot `B^N` consistency across predictor,
 coupled projection operator, and projection.  IB rows and force columns belong

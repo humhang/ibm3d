@@ -15,7 +15,9 @@ force columns and marker constraints are attached only to the finest level.
 
 $$
 \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u}
-\;=\; -\nabla p + \nu\,\nabla^2\mathbf{u}, \qquad
+\;=\; -\nabla p + \nabla\cdot\boldsymbol{\tau}, \qquad
+\tau_{ij}=\nu\left(\frac{\partial u_i}{\partial x_j}
+                 +\frac{\partial u_j}{\partial x_i}\right), \qquad
 \nabla \cdot \mathbf{u} \;=\; 0.
 $$
 
@@ -27,6 +29,8 @@ $$
 | `v`   | y-faces      | `(0,1,0)`      |
 | `w` (3D) | z-faces   | `(0,0,1)`      |
 | `p`   | cell centres | `(0,0,0)`      |
+| `tau_ii` | cell centres | `(0,0,0)`   |
+| `tau_ij`, `i != j` | i/j-edges | ones in directions i and j |
 
 ## Time stepping (per step, no temporal subcycling between levels)
 
@@ -35,11 +39,36 @@ Notation: `ε = ν dt / 2`, `B^N = Σ_{k=0}^{N} (εL)^k ≈ (I − εL)^{-1}`,
 
 ```
 A^n  = -(u^n · ∇) u^n                                            (explicit, centred)
-r1   = (I + εL) u^n + dt A^n                                     (no pressure — Perot)
+tau^n = nu (grad(u^n) + grad(u^n)^T)                               (saved from prior step)
+r1   = u^n + (dt/2) div(tau^n) + dt A^n                           (no pressure — Perot)
 u*   = B^N r1                                                    (predictor)
 solve (D B^N G) p = (1/dt) D u*                                  (modified Poisson)
 u^{n+1} = u* − dt B^N G p                                        (projection)
 ```
+
+All `d x d` components of `tau` are stored.  Diagonal derivatives map a
+velocity face field to cell centres; cross derivatives map it to the edge
+shared by the two directions.  Each off-diagonal pair is computed once and
+stored identically, so `tau_ij = tau_ji` exactly.  With the compatible MAC
+operators,
+
+```
+div(tau) = nu (L u + G D u) = nu L u
+```
+
+for the discretely divergence-free velocity saved after projection.  The CN
+predictor therefore retains the established formulation.  After projection
+and AMR average-down, the solver recomputes `tau^{n+1}` from the final velocity
+for use on the next step.  It does the same after initial data creation and
+regridding.  At a partial C/F interface, `face_linear_interp` does not make
+the fine ghost extension exactly divergence-free; the symmetric-stress form
+therefore retains a small local `nu G D u` contribution rather than being
+bitwise identical to a direct face Laplacian there.
+
+`tau` is the symmetric viscous part of the Newtonian Cauchy stress.  The total
+Cauchy stress is `sigma = -p I + tau`; pressure remains separately stored in
+`m_pressure` and enters through the Perot projection, so `-p I` is not folded
+into `m_stress`.
 
 With `ib.geometry` set, the hierarchy instead solves the composite
 Taira-Colonius Schur system
@@ -136,6 +165,10 @@ it violates the `B^N` stability cap.
 - `average_down_faces` of `u*` before the solve and of `u^{n+1}` after
   the projection keeps coarse face values consistent with averaged fine
   values at the C/F interface.
+- Stored stress is refreshed from the FillPatched, synchronized velocity
+  after initialization, after regridding, and after the final velocity
+  average-down in each step.  It is therefore consistent with the hierarchy
+  used by the next predictor.
 - Ghost cells at intra-level patch boundaries: `FillBoundary` (via
   `FillPatchSingleLevel`).  Ghost cells at C/F boundaries: interpolation
   from coarse (`face_linear_interp` for velocity, `cell_cons_interp` for
@@ -285,6 +318,9 @@ the pressure, so the mean is not removed).
 - Inhomogeneous Dirichlet data inside the truncated Neumann series
   (handled approximately: homogeneous in the series, re-imposed on
   `u*`/`u^{n+1}` afterwards — fine for low truncation order N).
+- Stress/traction boundary conditions.  The solver stores the symmetric
+  viscous Cauchy stress as groundwork, but does not yet impose total traction
+  data involving `sigma = -p I + tau`.
 - Broader long-time validation of composite AMR projection with
   non-periodic BCs; the AMR lid and inflow/outflow smoke tests cover the
   boundary/C/F interaction locally.

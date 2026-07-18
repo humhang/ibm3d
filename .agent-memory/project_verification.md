@@ -59,6 +59,30 @@ Code: `ComputeTG2DError` + the tg2d branch in `InitFlowField` +
 the dump/cmp block at the end of `Run` (VisMF for field I/O); AB2 in
 `Advance` (`m_advect_old`, `m_ab2_valid`).
 
+**Stored-stress regression (2026-07-17):** replacing the predictor's direct
+`nu L u` application with `div(tau)`, where
+`tau_ij = nu * (d(u_i)/d(x_j) + d(u_j)/d(x_i))`, uses the compatible identity
+`div(tau) = nu (L u + G D u)`.  The second term vanishes for the discretely
+divergence-free saved velocity.
+
+- A one-step single-level `tests/2d/tg2d` run matches the former
+  unsymmetrized-flux executable exactly, including 10 pressure iterations,
+  `|div u|_inf = 9.99e-16`, and both Taylor-Green error norms.  This directly
+  checks the compatible identity on a periodic MAC grid.
+- A one-step `tests/2d/tg2d_cf` run takes 1535 pressure iterations, reaches a
+  relative residual of `9.39e-13`, and leaves `|div u|_inf = 3.96e-15`.
+  Its velocity differs slightly from the former flux form because
+  `face_linear_interp` does not make the fine ghost extension exactly
+  divergence-free, so `G D u` is nonzero locally at C/F interfaces.
+- Six steps of `tests/2d/tg2d_amr/inputs.tg2d_amr`, including its step-5
+  regrid, take 20, 16, 16, 16, 17, and 13 pressure iterations and retain
+  `|div u|_inf <= 1.78e-15`; this exercises stress refresh after hierarchy
+  replacement.
+- The non-periodic 3D channel remains stable and reaches `3.8e-11` divergence
+  on step 2.  The 2D AMR square and 3D AMR plane IB smoke cases retain their
+  one- and four-iteration force-Schur convergence, with divergences
+  `4.5e-12` and `1.7e-15`, respectively.
+
 **IB force-Schur tests (fixed pressure work, 2026-07-11):**
 
 - `tests/2d/ib_square/inputs.ib_square` converges in one marker iteration.

@@ -23,6 +23,8 @@
 /// ------
 ///   u, v, w   face-centred (one component each)
 ///   p         cell-centred (one component)
+///   tau_ii    cell-centred
+///   tau_ij    i/j-edge-centred for i != j
 ///
 /// Algorithm (per time step)
 /// -------------------------
@@ -30,12 +32,13 @@
 ///   A^{−1})
 ///
 ///   1.  A^n  = -(u^n · ∇) u^n                          (explicit, centred)
-///   2.  r1   = (I + εL) u^n + dt A^n                   (NO pressure gradient —
-///   Perot)
+///   2.  r1   = u^n + (dt/2) div(tau^n) + dt A^n        (NO pressure gradient —
+///   Perot; div(tau^n) = nu (L u^n + G D u^n) = nu L u^n)
 ///   3.  u*   = B^N r1                                   (predictor)
 ///   4.  Solve the modified Poisson / optional IB Schur system.
 ///   5.  u^{n+1} = u* − dt B^N (G p^{n+1} [+ H f])
 ///   6.  Average u^{n+1} and p^{n+1} fine→coarse on overlapping faces / cells.
+///   7.  Recompute tau^{n+1} from the synchronized velocity.
 ///
 /// Why this differs from a textbook Chorin / incremental projection
 /// ----------------------------------------------------------------
@@ -155,11 +158,17 @@ private:
   // ---------------- Level data ----------------
   using FaceMFArray =
       std::array<std::unique_ptr<amrex::MultiFab>, AMREX_SPACEDIM>;
+  using StressMFArray = std::array<FaceMFArray, AMREX_SPACEDIM>;
 
   amrex::Vector<FaceMFArray> m_vel;        ///< current velocity (u, v, w)
   amrex::Vector<FaceMFArray> m_advect;     ///< advection term A^n
   amrex::Vector<FaceMFArray> m_advect_old; ///< A^{n-1} for AB2
   amrex::Vector<FaceMFArray> m_vstar;      ///< intermediate u*
+  /// Symmetric viscous Cauchy stress
+  /// tau_ij = nu * (d(u_i)/d(x_j) + d(u_j)/d(x_i)).  Diagonal components
+  /// are cell-centred; off-diagonal components are edge-centred.  Pressure is
+  /// stored separately and is not included here.
+  amrex::Vector<StressMFArray> m_stress;
   /// AB2 history valid? false on step 1 and the first step after a
   /// regrid (grids changed → stored A^{n-1} no longer matches);
   /// those steps fall back to explicit Euler (1st-order, one step,
@@ -210,11 +219,22 @@ public:
       int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &adv,
       const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel_in);
 
-  /// Build (I + εL) u^n + dt A^n before the hierarchy B^N application.
+  /// Build u^n + (dt/2) div(tau^n) + dt A^n before the hierarchy B^N
+  /// application.  For discretely divergence-free u^n, the saved symmetric
+  /// stress gives div(tau^n) = nu (L u^n + G D u^n) = nu L u^n.
   void BuildCNPredictorRHS(
       int lev, const std::array<amrex::MultiFab *, AMREX_SPACEDIM> &rhs,
       const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel_in,
-      const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &adv);
+      const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &adv,
+      const StressMFArray &stress);
+
+  void ComputeViscousStress(
+      int lev, const std::array<const amrex::MultiFab *, AMREX_SPACEDIM> &vel,
+      StressMFArray &stress);
+  void ComputeStressDivergence(int lev, int velocity_component,
+                               const StressMFArray &stress,
+                               amrex::MultiFab &div_tau);
+  void UpdateStoredStress(amrex::Real time);
 
   void ApplyFaceLaplacian(int lev, int dir, const amrex::MultiFab &fin,
                           amrex::MultiFab &Lf);

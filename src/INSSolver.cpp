@@ -43,6 +43,7 @@ INSSolver::INSSolver() {
   // levels reflect the higher-resolution IC where they overlap.
   AverageDownVelocity(m_vel);
   AverageDownPressure();
+  UpdateStoredStress(m_cur_time);
 
   if (m_check_pressure_pin)
     CheckOutflowPressurePin();
@@ -131,6 +132,7 @@ void INSSolver::Run() {
     if (m_regrid_int > 0 && max_level > 0 && (m_step % m_regrid_int == 0)) {
       regrid(0, m_cur_time);
       m_ab2_valid = false; // grids changed → A^{n-1} no longer valid
+      UpdateStoredStress(m_cur_time);
     }
 
     if (m_plot_int > 0 && (m_step % m_plot_int == 0)) {
@@ -328,13 +330,15 @@ void INSSolver::ClearLevel(int lev) {
     m_advect[lev][d].reset();
     m_advect_old[lev][d].reset();
     m_vstar[lev][d].reset();
+    for (int j = 0; j < AMREX_SPACEDIM; ++j)
+      m_stress[lev][d][j].reset();
   }
   m_pressure[lev].reset();
 }
 
 // ============================================================
 // AllocateLevelStorage — face MFs for velocity / advection / u*,
-//                       cell MFs for pressure / phi.
+//                       staggered stress, and cell-centred pressure.
 // ============================================================
 void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
                                      const DistributionMapping &dm) {
@@ -354,6 +358,7 @@ void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
     m_advect.resize(N);
     m_advect_old.resize(N);
     m_vstar.resize(N);
+    m_stress.resize(N);
     m_pressure.resize(N);
   }
 
@@ -366,6 +371,19 @@ void INSSolver::AllocateLevelStorage(int lev, const BoxArray &ba,
     m_advect[lev][d]->setVal(0.0);
     m_advect_old[lev][d]->setVal(0.0);
     m_vstar[lev][d]->setVal(0.0);
+  }
+
+  for (int i = 0; i < AMREX_SPACEDIM; ++i) {
+    for (int j = 0; j < AMREX_SPACEDIM; ++j) {
+      IntVect stress_nodality = IntVect::TheZeroVector();
+      if (i != j) {
+        stress_nodality[i] = 1;
+        stress_nodality[j] = 1;
+      }
+      BoxArray stress_ba = amrex::convert(ba, stress_nodality);
+      m_stress[lev][i][j] = std::make_unique<MultiFab>(stress_ba, dm, 1, 1);
+      m_stress[lev][i][j]->setVal(0.0);
+    }
   }
 
   m_pressure[lev] = std::make_unique<MultiFab>(ba, dm, 1, nghost_pre);
@@ -528,8 +546,8 @@ void INSSolver::Advance() {
     const BoxArray &ba = grids[lev];
     const DistributionMapping &dm = dmap[lev];
 
-    // Filled u^n: 2 ghost cells so the advection + Laplacian stencils work
-    // at patch and C/F boundaries.
+    // Filled u^n: 2 ghost cells for the centred advection stencil at patch
+    // and C/F boundaries.
     std::array<MultiFab, AMREX_SPACEDIM> u_n;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
       BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
@@ -565,7 +583,8 @@ void INSSolver::Advance() {
     }
 
     BuildCNPredictorRHS(lev, rhs_p, {AMREX_D_DECL(&u_n[0], &u_n[1], &u_n[2])},
-                        {AMREX_D_DECL(adv_eff[0], adv_eff[1], adv_eff[2])});
+                        {AMREX_D_DECL(adv_eff[0], adv_eff[1], adv_eff[2])},
+                        m_stress[lev]);
 
     // Promote A^n to next step's A^{n-1} by swapping the buffers
     // (m_advect still holds A^n; m_advect_old holds the spent blend
@@ -589,6 +608,7 @@ void INSSolver::Advance() {
   // ---- 3) Sync coarse with averaged-down fine ----
   AverageDownVelocity(m_vel);
   AverageDownPressure();
+  UpdateStoredStress(m_cur_time + m_dt);
 }
 
 // ============================================================

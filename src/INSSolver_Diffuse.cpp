@@ -3,7 +3,8 @@
  *
  * Crank–Nicolson predictor (Perot 1997 form, no pressure):
  *
- *   r1 = (I + εL) u^n  +  dt A^n               ε = ν dt / 2
+ *   tau^n = ν (grad(u^n) + grad(u^n)^T)
+ *   r1 = u^n + (dt/2) div(tau^n) + dt A^n      ε = ν dt / 2
  *   u* = B^N r1                                B^N = Σ_{k=0}^N (εL)^k
  *
  * Convergence of the series requires ‖εL‖ < 1, i.e. ν dt / h² < 1/d.
@@ -23,6 +24,128 @@
 #include <AMReX_MFIter.H>
 
 using namespace amrex;
+
+// ============================================================
+//  ComputeViscousStress — tau = nu * (grad(u) + grad(u)^T)
+// ============================================================
+void INSSolver::ComputeViscousStress(
+    int lev, const std::array<const MultiFab *, AMREX_SPACEDIM> &vel,
+    StressMFArray &stress) {
+  BL_PROFILE("INSSolver::ComputeViscousStress()");
+
+  const auto inv_dx = geom[lev].InvCellSizeArray();
+
+  for (int velocity_component = 0; velocity_component < AMREX_SPACEDIM;
+       ++velocity_component) {
+    for (int gradient_direction = velocity_component;
+         gradient_direction < AMREX_SPACEDIM; ++gradient_direction) {
+      MultiFab &tau = *stress[velocity_component][gradient_direction];
+      const bool diagonal = velocity_component == gradient_direction;
+      const Real gradient_coefficient = m_nu * inv_dx[gradient_direction];
+      const Real transpose_coefficient = m_nu * inv_dx[velocity_component];
+      const int gradient_i = gradient_direction == 0;
+      const int gradient_j = gradient_direction == 1;
+      const int gradient_k = gradient_direction == 2;
+      const int transpose_i = velocity_component == 0;
+      const int transpose_j = velocity_component == 1;
+      const int transpose_k = velocity_component == 2;
+
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+      for (MFIter mfi(tau); mfi.isValid(); ++mfi) {
+        const Box &bx = mfi.fabbox();
+        auto const &u = vel[velocity_component]->const_array(mfi);
+        auto const &u_transpose = vel[gradient_direction]->const_array(mfi);
+        auto const &t = tau.array(mfi);
+        auto const &t_transpose =
+            stress[gradient_direction][velocity_component]->array(mfi);
+
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j,
+                                                    int k) noexcept {
+          Real value;
+          if (diagonal) {
+            value = 2.0_rt * gradient_coefficient *
+                    (u(i + gradient_i, j + gradient_j, k + gradient_k) -
+                     u(i, j, k));
+          } else {
+            value = gradient_coefficient *
+                        (u(i, j, k) -
+                         u(i - gradient_i, j - gradient_j, k - gradient_k)) +
+                    transpose_coefficient *
+                        (u_transpose(i, j, k) - u_transpose(i - transpose_i,
+                                                            j - transpose_j,
+                                                            k - transpose_k));
+          }
+          t(i, j, k) = value;
+          if (!diagonal)
+            t_transpose(i, j, k) = value;
+        });
+      }
+    }
+  }
+}
+
+// ============================================================
+//  ComputeStressDivergence — div(tau) on velocity-component faces
+// ============================================================
+void INSSolver::ComputeStressDivergence(int lev, int velocity_component,
+                                        const StressMFArray &stress,
+                                        MultiFab &div_tau) {
+  BL_PROFILE("INSSolver::ComputeStressDivergence()");
+
+  const auto inv_dx = geom[lev].InvCellSizeArray();
+  const bool diagonal_x = velocity_component == 0;
+  const bool diagonal_y = velocity_component == 1;
+#if AMREX_SPACEDIM == 3
+  const bool diagonal_z = velocity_component == 2;
+#endif
+  const IntVect nod = IntVect::TheDimensionVector(velocity_component);
+
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+  for (MFIter mfi(div_tau, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+    const Box &bx = mfi.tilebox(nod);
+    auto const &tx = stress[velocity_component][0]->const_array(mfi);
+    auto const &ty = stress[velocity_component][1]->const_array(mfi);
+#if AMREX_SPACEDIM == 3
+    auto const &tz = stress[velocity_component][2]->const_array(mfi);
+#endif
+    auto const &d = div_tau.array(mfi);
+
+    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+      Real value = inv_dx[0] * (diagonal_x ? tx(i, j, k) - tx(i - 1, j, k)
+                                           : tx(i + 1, j, k) - tx(i, j, k)) +
+                   inv_dx[1] * (diagonal_y ? ty(i, j, k) - ty(i, j - 1, k)
+                                           : ty(i, j + 1, k) - ty(i, j, k));
+#if AMREX_SPACEDIM == 3
+      value += inv_dx[2] * (diagonal_z ? tz(i, j, k) - tz(i, j, k - 1)
+                                       : tz(i, j, k + 1) - tz(i, j, k));
+#endif
+      d(i, j, k) = value;
+    });
+  }
+}
+
+void INSSolver::UpdateStoredStress(Real time) {
+  BL_PROFILE("INSSolver::UpdateStoredStress()");
+
+  for (int lev = 0; lev <= finest_level; ++lev) {
+    const BoxArray &ba = grids[lev];
+    const DistributionMapping &dm = dmap[lev];
+    std::array<MultiFab, AMREX_SPACEDIM> velocity;
+    std::array<const MultiFab *, AMREX_SPACEDIM> velocity_ptr;
+
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+      BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
+      velocity[d].define(fba, dm, 1, 2);
+      FillFacePatch(lev, d, m_vel, velocity[d], time);
+      velocity_ptr[d] = &velocity[d];
+    }
+    ComputeViscousStress(lev, velocity_ptr, m_stress[lev]);
+  }
+}
 
 // ============================================================
 //  ApplyFaceLaplacian — 2nd-order centred face Laplacian
@@ -200,15 +323,14 @@ void INSSolver::ApplyCompositeBNFaces(Vector<FaceMFArray> &src,
 }
 
 // ============================================================
-//  BuildCNPredictorRHS — (I + εL) u^n + dt A^n
+//  BuildCNPredictorRHS — u^n + (dt/2) div(tau^n) + dt A^n
 // ============================================================
 void INSSolver::BuildCNPredictorRHS(
     int lev, const std::array<MultiFab *, AMREX_SPACEDIM> &rhs,
     const std::array<const MultiFab *, AMREX_SPACEDIM> &u_n,
-    const std::array<const MultiFab *, AMREX_SPACEDIM> &adv) {
+    const std::array<const MultiFab *, AMREX_SPACEDIM> &adv,
+    const StressMFArray &stress) {
   BL_PROFILE("INSSolver::BuildCNPredictorRHS()");
-
-  const Real eps = 0.5_rt * m_nu * m_dt;
 
   const BoxArray &ba = grids[lev];
   const DistributionMapping &dm = dmap[lev];
@@ -216,13 +338,13 @@ void INSSolver::BuildCNPredictorRHS(
   for (int d = 0; d < AMREX_SPACEDIM; ++d) {
     BoxArray fba = amrex::convert(ba, IntVect::TheDimensionVector(d));
 
-    // F = (I + εL) u^n + dt A^n   (no pressure gradient — Perot)
+    // F = u^n + (dt/2) div(tau^n) + dt A^n
     MultiFab &F = *rhs[d];
     MultiFab::Copy(F, *u_n[d], 0, 0, 1, 2); // u_n carries 2 ghosts
 
-    MultiFab LuN(fba, dm, 1, 0);
-    ApplyFaceLaplacian(lev, d, F, LuN);
-    MultiFab::Saxpy(F, eps, LuN, 0, 0, 1, 0); // F += εL u^n
+    MultiFab div_tau(fba, dm, 1, 0);
+    ComputeStressDivergence(lev, d, stress, div_tau);
+    MultiFab::Saxpy(F, 0.5_rt * m_dt, div_tau, 0, 0, 1, 0);
 
     MultiFab::Saxpy(F, m_dt, *adv[d], 0, 0, 1, 0); // F += dt A^n
 

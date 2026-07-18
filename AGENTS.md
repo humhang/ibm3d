@@ -15,14 +15,25 @@ FGMRES with a local/overlapping marker-block preconditioner.
 
 Key decisions already settled, do not re-litigate:
 
-- **MAC staggered grid**, second-order centred differencing.
+- **MAC staggered grid**, second-order centred differencing.  The solver stores
+  every component of the symmetric viscous Cauchy stress
+  `tau_ij = nu * (d(u_i)/d(x_j) + d(u_j)/d(x_i))`: diagonal components are
+  cell-centred and off-diagonal components are i/j-edge-centred.  Each
+  off-diagonal pair is stored identically.  Pressure remains separate, so the
+  total stress is `sigma = -p I + tau`.
 - **Explicit advection + Crank–Nicolson diffusion**, with `(I − εL)^{-1}`
   approximated by the truncated Neumann series `B^N = Σ_{k=0}^{N} (εL)^k`.
-- **Perot 1997 fractional step**: predictor `r1 = (I + εL) u^n + dt A^n`
+- **Perot 1997 fractional step**: predictor
+  `r1 = u^n + (dt/2) div(tau^n) + dt A^n = (I + εL) u^n + dt A^n`
   (NO pressure gradient), `u* = B^N r1`, modified-Poisson
   `(D B^N G) p^{n+1} = (1/dt) D u*`, projection
   `u^{n+1} = u* − dt B^N G p^{n+1}`.  `m_pressure` is solved for
   directly each step — there is no incremental form.
+  The equality uses the compatible MAC identity
+  `div(tau) = nu (L u + G D u)` and the saved velocity's discrete
+  incompressibility.  At partial C/F interfaces, `face_linear_interp` ghost
+  values are not exactly divergence-free, so the symmetric-stress predictor
+  legitimately retains a small local `nu G D u` term.
 - **Modified-Poisson and IB solves are matrix-free**.  Pressure-only solves
   use hand-rolled BiCGStab on the composite hierarchy operator.  IB solves
   eliminate pressure and apply `S_f = M - B A^-1 C` in marker space, with
@@ -104,6 +115,9 @@ Key decisions already settled, do not re-litigate:
 - `average_down_faces(m_vel)` + `average_down(m_pressure)` at the end of
   `Advance` to keep coarse representation consistent with averaged
   fine values after the projection.
+- Recompute `m_stress` from FillPatched `m_vel` after initial hierarchy
+  creation, after every regrid, and after the final velocity average-down in
+  `Advance`.  The next predictor must use stress matching its saved velocity.
 - The `B^N` factor in the projection step is the **same** polynomial
   used in the predictor and in the modified-Poisson operator — this is
   Perot's exact-factorisation consistency.  Don't replace any of the

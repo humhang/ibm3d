@@ -8,7 +8,13 @@ Decisions baked into the current solver, with rationale:
 
 1. **MAC staggered grid**.  u, v, w on face-centred MultiFabs; p on
    cell-centred MultiFabs.  Standard for incompressible NS — pressure
-   decoupled on the discrete grid, exact discrete projection possible.
+   decoupled on the discrete grid, exact discrete projection possible.  The
+   full stored viscous Cauchy stress uses
+   `tau_ij = nu * (d(u_i)/d(x_j) + d(u_j)/d(x_i))`: `tau_ii` is
+   cell-centred and each `tau_ij`, `i != j`, is nodal in directions i and j
+   (the corresponding edge).  `tau_ij` and `tau_ji` are separate fields but
+   are assigned from the same computed value so storage is exactly symmetric.
+   Pressure remains separate; total stress is `sigma = -p I + tau`.
 
 2. **Explicit second-order centred advection**.  Trades stability margin
    for simplicity and isotropy.  No upwinding / Godunov machinery; relies
@@ -20,7 +26,15 @@ Decisions baked into the current solver, with rationale:
    Cheap, no inner solve, but **NOT** unconditionally stable — `ComputeDt`
    enforces a diffusive cap so the Neumann series remains in its
    convergence regime.  Increase `ins.cn_order` if `ν dt / h²` is large
-   but still inside that cap.
+   but still inside that cap.  The explicit CN half-step now consumes the
+   saved stress as `u^n + (dt/2) div(tau^n)` instead of applying `nu L`
+   directly.  The compatible MAC composition gives
+   `div(tau) = nu (L u + G D u)`, which reduces to the old face Laplacian for
+   the discretely divergence-free saved velocity.  Stress is recomputed from
+   the synchronized final velocity after initialization, every regrid, and
+   every projection.  Fine velocity ghosts from `face_linear_interp` are not
+   exactly divergence-free at partial C/F interfaces, so the symmetric form
+   retains a small local `nu G D u` contribution there.
 
 4. **The modified-Poisson operator and convergence test are matrix-free**.
    The pressure step
